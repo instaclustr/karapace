@@ -2,6 +2,7 @@
 from karapace.avro_compatibility import SchemaCompatibilityResult
 
 
+
 def parse_protobuf_schema_definition(schema_definition: str) -> str:
     """ Parses and validates `schema_definition`.
 

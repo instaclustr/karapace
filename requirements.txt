@@ -6,6 +6,7 @@ jsonschema==3.2.0
 lz4==3.0.2
 requests==2.23.0
 networkx==2.5
+protobuf==3.14.0
 
 # Patched dependencies
 #
@@ -17,3 +18,10 @@ networkx==2.5
 #
 git+https://github.com/aiven/avro.git@513b153bac5040af6bba5847aef202adb680b67b#subdirectory=lang/py3/
 git+git://github.com/aiven/kafka-python.git@b9f2f78377d56392f61cba8856dc6c02ae841b79
+
+pytest~=6.2.2
+karapace~=2.0.1.dev168
+avro-python3~=1.11.0+snapshot
+filelock~=3.0.12
+argparse~=1.4.0
+setuptools~=50.3.0
