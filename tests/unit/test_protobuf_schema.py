@@ -2,7 +2,8 @@ from karapace.protobuf.kotlin_wrapper import trim_margin
 from karapace.protobuf.location import Location
 from karapace.schema_reader import SchemaType, TypedSchema
 from tests.schemas.protobuf import (
-    schema_protobuf_order_after, schema_protobuf_order_before, schema_protobuf_schema_registry1
+    schema_protobuf_order_after, schema_protobuf_order_before, schema_protobuf_schema_registry1,
+    schema_protobuf_order_before1
 )
 
 location: Location = Location.get("file.proto")

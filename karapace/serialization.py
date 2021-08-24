@@ -1,6 +1,8 @@
 from avro.io import BinaryDecoder, BinaryEncoder, DatumReader, DatumWriter
 from json import load
 from jsonschema import ValidationError
+
+from karapace.protobuf.io import ProtobufDatumReader, ProtobufBinaryDecoder
 from karapace.schema_reader import InvalidSchema, SchemaType, TypedSchema
 from karapace.utils import Client, json_encode
 from typing import Dict, Optional
@@ -192,8 +194,9 @@ def read_value(schema: TypedSchema, bio: io.BytesIO):
         return value
     if schema.schema_type is SchemaType.PROTOBUF:
         # TODO: PROTOBUF* we need use protobuf validator there
-        value = bio.read()
-        return value
+        reader = ProtobufDatumReader(schema.schema)
+        return reader.read(bio)
+
     raise ValueError("Unknown schema type")
 
 
