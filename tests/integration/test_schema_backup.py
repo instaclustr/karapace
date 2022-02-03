@@ -51,21 +51,23 @@ async def test_backup_restore(
 
     with restore_location.open("w") as fp:
         jsonlib.dump(
-            [[
-                {
-                    "subject": subject,
-                    "version": 1,
-                    "magic": 1,
-                    "keytype": "SCHEMA",
-                },
-                {
-                    "deleted": False,
-                    "id": 1,
-                    "schema": "\"string\"",
-                    "subject": subject,
-                    "version": 1,
-                },
-            ]],
+            [
+                [
+                    {
+                        "subject": subject,
+                        "version": 1,
+                        "magic": 1,
+                        "keytype": "SCHEMA",
+                    },
+                    {
+                        "deleted": False,
+                        "id": 1,
+                        "schema": '"string"',
+                        "subject": subject,
+                        "version": 1,
+                    },
+                ]
+            ],
             fp=fp,
         )
 
@@ -89,7 +91,7 @@ async def test_backup_restore(
     assert res.json()["compatibility"] == "NONE"
 
     # Restore a compatibility config remove message
-    with open(restore_location, "w") as fp:
+    with open(restore_location, mode="w", encoding="utf8") as fp:
         fp.write(
             """
 [
@@ -102,7 +104,9 @@ async def test_backup_restore(
         null
     ]
 ]
-        """.format(subject_value=subject)
+        """.format(
+                subject_value=subject
+            )
         )
     res = await registry_async_client.get(f"config/{subject}")
     assert res.status == 200
@@ -119,7 +123,7 @@ async def test_backup_restore(
     res = await registry_async_client.get(f"subjects/{subject}/versions")
     assert res.status == 200
     assert res.json() == [1, 2]
-    with open(restore_location, "w") as fp:
+    with open(restore_location, mode="w", encoding="utf8") as fp:
         fp.write(
             """
 [
@@ -133,7 +137,9 @@ async def test_backup_restore(
         null
     ]
 ]
-        """.format(subject_value=subject)
+        """.format(
+                subject_value=subject
+            )
         )
     sb.restore_backup()
     time.sleep(1.0)
@@ -144,7 +150,7 @@ async def test_backup_restore(
     # Schema delete for a nonexistent subject version is ignored
     subject = new_random_name("subject")
     res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": '{"type": "string"}'})
-    with open(restore_location, "w") as fp:
+    with open(restore_location, mode="w", encoding="utf8") as fp:
         fp.write(
             """
 [
@@ -158,7 +164,9 @@ async def test_backup_restore(
         null
     ]
 ]
-        """.format(subject_value=subject)
+        """.format(
+                subject_value=subject
+            )
         )
     sb.restore_backup()
     time.sleep(1.0)

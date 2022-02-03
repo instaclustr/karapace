@@ -3,12 +3,30 @@ from itertools import product
 from jsonschema import Draft7Validator
 from karapace.avro_compatibility import is_compatible, is_incompatible, SchemaCompatibilityResult
 from karapace.compatibility.jsonschema.types import (
-    AssertionCheck, BooleanSchema, Incompatibility, Instance, Keyword, Subschema
+    AssertionCheck,
+    BooleanSchema,
+    Incompatibility,
+    Instance,
+    Keyword,
+    Subschema,
 )
 from karapace.compatibility.jsonschema.utils import (
-    get_name_of, get_type_of, gt, introduced_constraint, is_false_schema, is_object_content_model_open, is_simple_subschema,
-    is_true_schema, is_tuple, is_tuple_without_additional_items, JSONSCHEMA_TYPES, lt, maybe_get_subschemas_and_type, ne,
-    normalize_schema, schema_from_partially_open_content_model
+    get_name_of,
+    get_type_of,
+    gt,
+    introduced_constraint,
+    is_false_schema,
+    is_object_content_model_open,
+    is_simple_subschema,
+    is_true_schema,
+    is_tuple,
+    is_tuple_without_additional_items,
+    JSONSCHEMA_TYPES,
+    lt,
+    maybe_get_subschemas_and_type,
+    ne,
+    normalize_schema,
+    schema_from_partially_open_content_model,
 )
 from typing import Any, List, Optional
 
@@ -114,7 +132,7 @@ MIN_ITEMS_CHECK = AssertionCheck(
 def type_mismatch(reader_type, writer_type, location: List[str]) -> SchemaCompatibilityResult:
     return SchemaCompatibilityResult.incompatible(
         incompat_type=Incompatibility.type_changed,
-        message=f'type {reader_type} is not compatible with type {writer_type}',
+        message=f"type {reader_type} is not compatible with type {writer_type}",
         location=location,
     )
 
@@ -138,7 +156,7 @@ def count_uniquely_compatible_schemas(reader_type: Instance, reader_schema, writ
     reader_node_schema = [(Node("reader", reader_pos), schema) for reader_pos, schema in enumerate(reader_schema)]
     writer_node_schema = [(Node("writer", writer_pos), schema) for writer_pos, schema in enumerate(writer_schema)]
 
-    compatible_edges = list()
+    compatible_edges = []
     top_nodes = set()
     for (reader_node, reader_subschema), (writer_node, writer_subschema) in product(reader_node_schema, writer_node_schema):
         rec_result = compatibility_rec(
@@ -593,7 +611,7 @@ def compatibility_object(reader_schema, writer_schema, location: List[str]) -> S
         is_writer_open_model = is_object_content_model_open(writer_schema)
 
         if is_writer_open_model:
-            properties = ', '.join(properties_unknown_to_writer)
+            properties = ", ".join(properties_unknown_to_writer)
             message_property_added_to_open_content_model = (
                 f"Restricting acceptable values of properties is an incompatible "
                 f"change. The following properties {properties} accepted any "
@@ -604,7 +622,7 @@ def compatibility_object(reader_schema, writer_schema, location: List[str]) -> S
             result.add_incompatibility(
                 incompat_type=Incompatibility.property_added_to_open_content_model,
                 message=message_property_added_to_open_content_model,
-                location=properties_location
+                location=properties_location,
             )
 
         if not is_writer_open_model:
@@ -627,9 +645,12 @@ def compatibility_object(reader_schema, writer_schema, location: List[str]) -> S
                             location=properties_location,
                         )
 
-                new_property_is_required_without_default = (
-                    unknown_property_to_writer in reader_schema.get(Keyword.REQUIRED.value, list())
-                    and Keyword.DEFAULT.value not in reader_properties.get(Keyword.REQUIRED.value, list())
+                new_property_is_required_without_default = unknown_property_to_writer in reader_schema.get(
+                    Keyword.REQUIRED.value,
+                    [],
+                ) and Keyword.DEFAULT.value not in reader_properties.get(
+                    Keyword.REQUIRED.value,
+                    [],
                 )
                 if new_property_is_required_without_default:
                     result.add_incompatibility(
@@ -638,8 +659,8 @@ def compatibility_object(reader_schema, writer_schema, location: List[str]) -> S
                         location=properties_location,
                     )
 
-    reader_attribute_dependencies_schema = reader_schema.get(Keyword.DEPENDENCIES.value, dict())
-    writer_attribute_dependencies_schema = writer_schema.get(Keyword.DEPENDENCIES.value, dict())
+    reader_attribute_dependencies_schema = reader_schema.get(Keyword.DEPENDENCIES.value, {})
+    writer_attribute_dependencies_schema = writer_schema.get(Keyword.DEPENDENCIES.value, {})
 
     for writer_attribute_dependency_name, writer_attribute_dependencies in writer_attribute_dependencies_schema.items():
         reader_attribute_dependencies = reader_attribute_dependencies_schema.get(writer_attribute_dependency_name)
@@ -656,11 +677,11 @@ def compatibility_object(reader_schema, writer_schema, location: List[str]) -> S
             result.add_incompatibility(
                 incompat_type=Incompatibility.dependency_array_extended,
                 message=f"new dependencies {new_dependencies}",
-                location=location
+                location=location,
             )
 
-    reader_dependent_schemas = reader_schema.get(Keyword.DEPENDENT_SCHEMAS.value, dict())
-    writer_dependent_schemas = writer_schema.get(Keyword.DEPENDENT_SCHEMAS.value, dict())
+    reader_dependent_schemas = reader_schema.get(Keyword.DEPENDENT_SCHEMAS.value, {})
+    writer_dependent_schemas = writer_schema.get(Keyword.DEPENDENT_SCHEMAS.value, {})
 
     for writer_dependent_schema_name, writer_dependent_schema in writer_dependent_schemas.items():
         reader_dependent_schema = reader_dependent_schemas.get(writer_dependent_schema_name)
@@ -668,7 +689,7 @@ def compatibility_object(reader_schema, writer_schema, location: List[str]) -> S
             result.add_incompatibility(
                 incompat_type=Incompatibility.dependency_schema_added,
                 message=f"new dependency schema {writer_dependent_schema_name}",
-                location=location
+                location=location,
             )
 
         rec_result = compatibility_rec(reader_dependent_schema, writer_dependent_schema, location)

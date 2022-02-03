@@ -5,7 +5,7 @@ from typing import Any, List, Optional, Tuple, Type, TypeVar, Union
 
 import re
 
-T = TypeVar('T')
+T = TypeVar("T")
 JSONSCHEMA_TYPES = Union[Instance, Subschema, Keyword, Type[BooleanSchema]]
 
 
@@ -27,15 +27,16 @@ def normalize_schema_rec(validator, original_schema) -> Any:
         if scope:
             resolver.push_scope(scope)
 
-        normalized = dict()
+        normalized = {}
         if ref is not None:
             resolved_scope, resolved_schema = resolver.resolve(ref)
             resolver.push_scope(resolved_scope)
             normalized.update(normalize_schema_rec(validator, resolved_schema))
             resolver.pop_scope()
         else:
-            normalized.update((keyword, normalize_schema_rec(validator, original_schema[keyword]))
-                              for keyword in original_schema)
+            normalized.update(
+                (keyword, normalize_schema_rec(validator, original_schema[keyword])) for keyword in original_schema
+            )
 
         if scope:
             resolver.pop_scope()
@@ -125,7 +126,7 @@ def is_string_and_constrained(schema: Any) -> bool:
     if schema.get(Keyword.TYPE.value) != Instance.STRING.value:
         return False
 
-    has_max_length = schema.get(Keyword.MAX_LENGTH.value, float('inf')) != float('inf')
+    has_max_length = schema.get(Keyword.MAX_LENGTH.value, float("inf")) != float("inf")
     has_min_length = schema.get(Keyword.MIN_LENGTH.value, 0) != 0
     has_pattern = schema.get(Keyword.PATTERN.value) is not None
 
@@ -144,7 +145,7 @@ def is_object_content_model_open(schema: Any) -> bool:
     if not isinstance(schema, dict):
         return False
 
-    does_not_restrict_properties_by_pattern = len(schema.get(Keyword.PATTERN_PROPERTIES.value, list())) == 0
+    does_not_restrict_properties_by_pattern = len(schema.get(Keyword.PATTERN_PROPERTIES.value, [])) == 0
     does_not_restrict_additional_properties = is_true_schema(schema.get(Keyword.ADDITIONAL_PROPERTIES.value, True))
 
     return does_not_restrict_properties_by_pattern and does_not_restrict_additional_properties
@@ -302,7 +303,7 @@ def schema_from_partially_open_content_model(schema: dict, target_property_name:
     """Returns the schema from patternProperties or additionalProperties that
     validates `target_property_name`, if any.
     """
-    for pattern, pattern_schema in schema.get(Keyword.PATTERN_PROPERTIES.value, dict()).items():
+    for pattern, pattern_schema in schema.get(Keyword.PATTERN_PROPERTIES.value, {}).items():
         if re.match(pattern, target_property_name):
             return pattern_schema
 

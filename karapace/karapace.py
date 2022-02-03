@@ -23,7 +23,6 @@ class KarapaceBase(RestApp):
         sentry_config = config.get("sentry", {"dsn": None}).copy()
         super().__init__(app_name="karapace", sentry_config=sentry_config)
 
-        self.config = {}
         self.producer = None
         self.kafka_timeout = 10
         self.config = config
@@ -87,10 +86,7 @@ class KarapaceBase(RestApp):
         KarapaceBase.r(
             content_type=content_type,
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
-            body={
-                "message": message,
-                "error_code": HTTPStatus.INTERNAL_SERVER_ERROR.value
-            }
+            body={"message": message, "error_code": HTTPStatus.INTERNAL_SERVER_ERROR.value},
         )
 
     @staticmethod
@@ -98,10 +94,7 @@ class KarapaceBase(RestApp):
         KarapaceBase.r(
             content_type=content_type,
             status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            body={
-                "message": message,
-                "error_code": sub_code
-            }
+            body={"message": message, "error_code": sub_code},
         )
 
     @staticmethod
@@ -109,19 +102,13 @@ class KarapaceBase(RestApp):
         KarapaceBase.r(
             content_type=content_type,
             status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            body={
-                "message": message,
-                "error_code": sub_code
-            }
+            body={"message": message, "error_code": sub_code},
         )
 
     @staticmethod
     def not_found(message: str, sub_code: int, content_type: str) -> NoReturn:
         KarapaceBase.r(
-            content_type=content_type, status=HTTPStatus.NOT_FOUND, body={
-                "message": message,
-                "error_code": sub_code
-            }
+            content_type=content_type, status=HTTPStatus.NOT_FOUND, body={"message": message, "error_code": sub_code}
         )
 
     async def root_get(self) -> NoReturn:
