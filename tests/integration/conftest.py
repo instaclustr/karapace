@@ -16,8 +16,15 @@ from karapace.utils import Client
 from pathlib import Path
 from subprocess import Popen
 from tests.utils import (
-    Expiration, get_random_port, KAFKA_PORT_RANGE, KafkaConfig, KafkaServers, new_random_name, REGISTRY_PORT_RANGE,
-    repeat_until_successful_request, ZK_PORT_RANGE
+    Expiration,
+    get_random_port,
+    KAFKA_PORT_RANGE,
+    KafkaConfig,
+    KafkaServers,
+    new_random_name,
+    REGISTRY_PORT_RANGE,
+    repeat_until_successful_request,
+    ZK_PORT_RANGE,
 )
 from typing import AsyncIterator, Dict, Iterator, List, Optional, Tuple
 
@@ -45,9 +52,9 @@ class ZKConfig:
     @staticmethod
     def from_dict(data: dict) -> "ZKConfig":
         return ZKConfig(
-            data['client_port'],
-            data['admin_port'],
-            data['path'],
+            data["client_port"],
+            data["admin_port"],
+            data["path"],
         )
 
 
@@ -88,14 +95,24 @@ def wait_for_kafka(kafka_servers: KafkaServers, wait_time) -> None:
             # - if the address/port does not point to a running server
             # LeaderNotAvailableError:
             # - if there is no leader yet
-            except (NoBrokersAvailable, LeaderNotAvailableError, ValueError) as e:  # pylint: disable=broad-except
+            except (
+                NoBrokersAvailable,
+                LeaderNotAvailableError,
+                ValueError,
+            ) as e:
                 print(f"Error checking kafka cluster: {e}")
                 time.sleep(2.0)
             else:
                 list_topics_successful = True
 
 
-def wait_for_port(port: int, *, hostname: str = "127.0.0.1", wait_time: float = 20.0, ipv6: bool = False) -> None:
+def wait_for_port(
+    port: int,
+    *,
+    hostname: str = "127.0.0.1",
+    wait_time: float = 20.0,
+    ipv6: bool = False,
+) -> None:
     start_time = time.monotonic()
     expiration = Expiration(deadline=start_time + wait_time)
     msg = f"Timeout waiting for `{hostname}:{port}`"
@@ -109,10 +126,10 @@ def wait_for_port(port: int, *, hostname: str = "127.0.0.1", wait_time: float = 
 
 
 def lock_path_for(path: Path) -> Path:
-    """ Append .lock to path """
+    """Append .lock to path"""
     suffixes = path.suffixes
-    suffixes.append('.lock')
-    return path.with_suffix(''.join(suffixes))
+    suffixes.append(".lock")
+    return path.with_suffix("".join(suffixes))
 
 
 @pytest.fixture(scope="session", name="kafka_servers")
@@ -134,11 +151,11 @@ def fixture_kafka_server(request, session_tmppath: Path) -> Iterator[KafkaServer
         # transfer_file (primarily the server's port number)
 
         # there is an issue with pylint here, see https:/github.com/tox-dev/py-filelock/issues/102
-        with FileLock(str(lock_path_for(transfer_file))):  # pylint: disable=E0110
+        with FileLock(str(lock_path_for(transfer_file))):  # pylint: disable=abstract-class-instantiated
             if transfer_file.exists():
                 config_data = json.loads(transfer_file.read_text())
-                zk_config = ZKConfig.from_dict(config_data['zookeeper'])
-                kafka_config = KafkaConfig.from_dict(config_data['kafka'])
+                zk_config = ZKConfig.from_dict(config_data["zookeeper"])
+                kafka_config = KafkaConfig.from_dict(config_data["kafka"])
             else:
                 zk_config, zk_proc = configure_and_start_zk(zk_dir)
                 stack.callback(stop_process, zk_proc)
@@ -150,8 +167,8 @@ def fixture_kafka_server(request, session_tmppath: Path) -> Iterator[KafkaServer
                 stack.callback(stop_process, kafka_proc)
 
                 config_data = {
-                    'zookeeper': asdict(zk_config),
-                    'kafka': asdict(kafka_config),
+                    "zookeeper": asdict(zk_config),
+                    "kafka": asdict(kafka_config),
                 }
                 transfer_file.write_text(json.dumps(config_data))
 
@@ -252,34 +269,42 @@ def fixture_registry_async_pair(tmp_path: Path, kafka_servers: KafkaServers):
     topic_name = new_random_name("schema_pairs")
     group_id = new_random_name("schema_pairs")
     write_config(
-        master_config_path, {
+        master_config_path,
+        {
             "bootstrap_uri": kafka_servers.bootstrap_servers,
             "topic_name": topic_name,
             "group_id": group_id,
             "advertised_hostname": "127.0.0.1",
             "karapace_registry": True,
             "port": master_port,
-        }
+        },
     )
     write_config(
-        slave_config_path, {
+        slave_config_path,
+        {
             "bootstrap_uri": kafka_servers.bootstrap_servers,
             "topic_name": topic_name,
             "group_id": group_id,
             "advertised_hostname": "127.0.0.1",
             "karapace_registry": True,
             "port": slave_port,
-        }
+        },
     )
-    master_process = Popen(["python", "-m", "karapace.karapace_all", str(master_config_path)])
-    slave_process = Popen(["python", "-m", "karapace.karapace_all", str(slave_config_path)])
-    try:
-        wait_for_port(master_port)
-        wait_for_port(slave_port)
-        yield f"http://127.0.0.1:{master_port}", f"http://127.0.0.1:{slave_port}"
-    finally:
-        master_process.kill()
-        slave_process.kill()
+
+    master_process = None
+    slave_process = None
+    with ExitStack() as stack:
+        try:
+            master_process = stack.enter_context(Popen(["python", "-m", "karapace.karapace_all", str(master_config_path)]))
+            slave_process = stack.enter_context(Popen(["python", "-m", "karapace.karapace_all", str(slave_config_path)]))
+            wait_for_port(master_port)
+            wait_for_port(slave_port)
+            yield f"http://127.0.0.1:{master_port}", f"http://127.0.0.1:{slave_port}"
+        finally:
+            if master_process:
+                master_process.kill()
+            if slave_process:
+                slave_process.kill()
 
 
 @pytest.fixture(scope="function", name="registry_async")
@@ -293,23 +318,24 @@ async def fixture_registry_async(
     # so would cause this node to join the existing group and participate in
     # the election process. Without proper configuration for the listeners that
     # won't work and will cause test failures.
-    rest_url = request.config.getoption("registry_url")
-    if rest_url:
+    registry_url = request.config.getoption("registry_url")
+    if registry_url:
         yield None
         return
 
     config_path = tmp_path / "karapace_config.json"
 
-    config = set_config_defaults({
-        "bootstrap_uri": kafka_servers.bootstrap_servers,
-
-        # Using the default settings instead of random values, otherwise it
-        # would not be possible to run the tests with external services.
-        # Because of this every test must be written in such a way that it can
-        # be executed twice with the same servers.
-        # "topic_name": new_random_name("topic"),
-        # "group_id": new_random_name("schema_registry")
-    })
+    config = set_config_defaults(
+        {
+            "bootstrap_uri": kafka_servers.bootstrap_servers,
+            # Using the default settings instead of random values, otherwise it
+            # would not be possible to run the tests with external services.
+            # Because of this every test must be written in such a way that it can
+            # be executed twice with the same servers.
+            # "topic_name": new_random_name("topic"),
+            # "group_id": new_random_name("schema_registry")
+        }
+    )
     write_config(config_path, config)
     registry = KarapaceSchemaRegistry(config=config)
     await registry.get_master()
@@ -331,13 +357,114 @@ async def fixture_registry_async_client(
 
     # client and server_uri are incompatible settings.
     if registry_url:
-        client = Client(server_uri=registry_url)
+        client = Client(server_uri=registry_url, server_ca=request.config.getoption("server_ca"))
     else:
 
         async def get_client():
             return await aiohttp_client(registry_async.app)
 
         client = Client(client_factory=get_client)
+
+    try:
+        # wait until the server is listening, otherwise the tests may fail
+        await repeat_until_successful_request(
+            client.get,
+            "subjects",
+            json_data=None,
+            headers=None,
+            error_msg="REST API is unreachable",
+            timeout=10,
+            sleep=0.3,
+        )
+        yield client
+    finally:
+        await client.close()
+
+
+@pytest.fixture(scope="function", name="credentials_folder")
+def fixture_credentials_folder():
+    integration_test_folder = os.path.dirname(__file__)
+    credentials_folder = os.path.join(integration_test_folder, "credentials")
+    return credentials_folder
+
+
+@pytest.fixture(scope="function", name="server_ca")
+def fixture_server_ca(credentials_folder):
+    return os.path.join(credentials_folder, "cacert.pem")
+
+
+@pytest.fixture(scope="function", name="server_cert")
+def fixture_server_cert(credentials_folder):
+    return os.path.join(credentials_folder, "servercert.pem")
+
+
+@pytest.fixture(scope="function", name="server_key")
+def fixture_server_key(credentials_folder):
+    return os.path.join(credentials_folder, "serverkey.pem")
+
+
+@pytest.fixture(scope="function", name="registry_async_tls")
+async def fixture_registry_async_tls(
+    request,
+    loop,  # pylint: disable=unused-argument
+    tmp_path: Path,
+    kafka_servers: KafkaServers,
+    server_cert: str,
+    server_key: str,
+) -> AsyncIterator[Optional[KarapaceSchemaRegistry]]:
+    # Do not start a registry when the user provided an external service. Doing
+    # so would cause this node to join the existing group and participate in
+    # the election process. Without proper configuration for the listeners that
+    # won't work and will cause test failures.
+    registry_url = request.config.getoption("registry_url")
+    if registry_url:
+        yield None
+        return
+
+    config_path = tmp_path / "karapace_config.json"
+
+    config = set_config_defaults(
+        {
+            "bootstrap_uri": kafka_servers.bootstrap_servers,
+            "server_tls_certfile": server_cert,
+            "server_tls_keyfile": server_key,
+            "port": 8444,
+            # Using the default settings instead of random values, otherwise it
+            # would not be possible to run the tests with external services.
+            # Because of this every test must be written in such a way that it can
+            # be executed twice with the same servers.
+            # "topic_name": new_random_name("topic"),
+            # "group_id": new_random_name("schema_registry")
+        }
+    )
+    write_config(config_path, config)
+    registry = KarapaceSchemaRegistry(config=config)
+    await registry.get_master()
+    try:
+        yield registry
+    finally:
+        await registry.close()
+
+
+@pytest.fixture(scope="function", name="registry_async_client_tls")
+async def fixture_registry_async_client_tls(
+    request,
+    loop,  # pylint: disable=unused-argument
+    registry_async_tls: KarapaceSchemaRegistry,
+    aiohttp_client,
+    server_ca: str,
+) -> AsyncIterator[Client]:
+
+    registry_url = request.config.getoption("registry_url")
+
+    if registry_url:
+        client = Client(server_uri=registry_url, server_ca=request.config.getoption("server_ca"))
+    else:
+
+        async def get_client():
+            return await aiohttp_client(registry_async_tls.app)
+
+        client = Client(client_factory=get_client, server_ca=server_ca)
 
     try:
         # wait until the server is listening, otherwise the tests may fail
@@ -426,12 +553,16 @@ def configure_and_start_kafka(kafka_dir: Path, zk: ZKConfig) -> Tuple[KafkaConfi
         zookeeper_port=zk.client_port,
     )
 
-    advertised_listeners = ",".join([
-        "PLAINTEXT://127.0.0.1:{}".format(plaintext_port),
-    ])
-    listeners = ",".join([
-        "PLAINTEXT://:{}".format(plaintext_port),
-    ])
+    advertised_listeners = ",".join(
+        [
+            "PLAINTEXT://127.0.0.1:{}".format(plaintext_port),
+        ]
+    )
+    listeners = ",".join(
+        [
+            "PLAINTEXT://:{}".format(plaintext_port),
+        ]
+    )
 
     # Keep in sync with containers/docker-compose.yml
     kafka_config = {
@@ -479,7 +610,7 @@ def configure_and_start_kafka(kafka_dir: Path, zk: ZKConfig) -> Tuple[KafkaConfi
             kafka_config_path=str(config_path),
         ),
     )
-    env: Dict[bytes, bytes] = dict()
+    env: Dict[bytes, bytes] = {}
     proc = Popen(kafka_cmd, env=env)
     return config, proc
 

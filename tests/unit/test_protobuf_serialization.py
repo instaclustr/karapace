@@ -1,7 +1,11 @@
 from karapace.config import read_config
 from karapace.serialization import (
-    InvalidMessageHeader, InvalidMessageSchema, InvalidPayload, SchemaRegistryDeserializer, SchemaRegistrySerializer,
-    START_BYTE
+    InvalidMessageHeader,
+    InvalidMessageSchema,
+    InvalidPayload,
+    SchemaRegistryDeserializer,
+    SchemaRegistrySerializer,
+    START_BYTE,
 )
 from tests.utils import test_fail_objects_protobuf, test_objects_protobuf
 
@@ -13,7 +17,7 @@ log = logging.getLogger(__name__)
 
 
 async def make_ser_deser(config_path, mock_client):
-    with open(config_path) as handler:
+    with open(config_path, encoding="utf8") as handler:
         config = read_config(handler)
     serializer = SchemaRegistrySerializer(config_path=config_path, config=config)
     deserializer = SchemaRegistryDeserializer(config_path=config_path, config=config)
@@ -67,6 +71,6 @@ async def test_deserialization_fails2(default_config_path, mock_protobuf_registr
     with pytest.raises(InvalidMessageHeader):
         await deserializer.deserialize(invalid_header_payload)
 
-    enc_bytes = b'\x00\x00\x00\x00\x01\x00\x02\x05\0x12'  # wrong schema data (2)
+    enc_bytes = b"\x00\x00\x00\x00\x01\x00\x02\x05\0x12"  # wrong schema data (2)
     with pytest.raises(InvalidPayload):
         await deserializer.deserialize(enc_bytes)

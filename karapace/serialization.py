@@ -6,7 +6,7 @@ from karapace.protobuf.exception import ProtobufTypeException
 from karapace.protobuf.io import ProtobufDatumReader, ProtobufDatumWriter
 from karapace.schema_reader import InvalidSchema, SchemaType, TypedSchema
 from karapace.utils import Client, json_encode
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from urllib.parse import quote
 
 import asyncio
@@ -46,13 +46,11 @@ class SchemaUpdateError(SchemaError):
     pass
 
 
-def topic_name_strategy(topic_name: str, record_name: str) -> str:
-    # pylint: disable=W0613
+def topic_name_strategy(topic_name: str, record_name: str) -> str:  # pylint: disable=unused-argument
     return topic_name
 
 
-def record_name_strategy(topic_name: str, record_name: str) -> str:
-    # pylint: disable=W0613
+def record_name_strategy(topic_name: str, record_name: str) -> str:  # pylint: disable=unused-argument
     return record_name
 
 
@@ -63,13 +61,13 @@ def topic_record_name_strategy(topic_name: str, record_name: str) -> str:
 NAME_STRATEGIES = {
     "topic_name": topic_name_strategy,
     "record_name": record_name_strategy,
-    "topic_record_name": topic_record_name_strategy
+    "topic_record_name": topic_record_name_strategy,
 }
 
 
 class SchemaRegistryClient:
-    def __init__(self, schema_registry_url: str = "http://localhost:8081"):
-        self.client = Client(server_uri=schema_registry_url)
+    def __init__(self, schema_registry_url: str = "http://localhost:8081", server_ca: Optional[str] = None):
+        self.client = Client(server_uri=schema_registry_url, server_ca=server_ca)
         self.base_url = schema_registry_url
 
     async def post_new_schema(self, subject: str, schema: TypedSchema) -> int:
@@ -82,7 +80,7 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(result.json())
         return result.json()["id"]
 
-    async def get_latest_schema(self, subject: str) -> (int, TypedSchema):
+    async def get_latest_schema(self, subject: str) -> Tuple[int, TypedSchema]:
         result = await self.client.get(f"subjects/{quote(subject)}/versions/latest")
         if not result.ok:
             raise SchemaRetrievalError(result.json())
@@ -121,8 +119,12 @@ class SchemaRegistrySerializerDeserializer:
     ) -> None:
         self.config = config
         self.state_lock = asyncio.Lock()
-        registry_url = f"http://{self.config['registry_host']}:{self.config['registry_port']}"
-        registry_client = SchemaRegistryClient(registry_url)
+        if self.config.get("registry_ca"):
+            registry_url = f"https://{self.config['registry_host']}:{self.config['registry_port']}"
+            registry_client = SchemaRegistryClient(registry_url, server_ca=self.config["registry_ca"])
+        else:
+            registry_url = f"http://{self.config['registry_host']}:{self.config['registry_port']}"
+            registry_client = SchemaRegistryClient(registry_url)
         self.subject_name_strategy = NAME_STRATEGIES[name_strategy]
         self.registry_client: Optional[SchemaRegistryClient] = registry_client
         self.ids_to_schemas: Dict[int, TypedSchema] = {}

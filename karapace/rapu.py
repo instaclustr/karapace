@@ -83,11 +83,11 @@ class HTTPRequest:
         self.json = None
 
     @overload
-    def get_header(self, header: str) -> Optional[str]:  # pylint: disable=no-self-use
+    def get_header(self, header: str) -> Optional[str]:
         ...
 
     @overload
-    def get_header(self, header: str, default_value: str) -> str:  # pylint: disable=no-self-use
+    def get_header(self, header: str, default_value: str) -> str:
         ...
 
     def get_header(self, header, default_value=None):
@@ -113,6 +113,7 @@ class HTTPRequest:
 class HTTPResponse(Exception):
     """A custom Response object derived from Exception so it can be raised
     in response handler callbacks."""
+
     status: HTTPStatus
     json: Union[None, list, dict]
 
@@ -122,7 +123,7 @@ class HTTPResponse(Exception):
         *,
         status: HTTPStatus = HTTPStatus.OK,
         content_type: Optional[str] = None,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.body = body
         self.status = status
@@ -147,10 +148,13 @@ class HTTPResponse(Exception):
 
 def http_error(message, content_type: str, code: HTTPStatus) -> NoReturn:
     raise HTTPResponse(
-        body=json_encode({
-            "error_code": code,
-            "message": message,
-        }, binary=True),
+        body=json_encode(
+            {
+                "error_code": code,
+                "message": message,
+            },
+            binary=True,
+        ),
         headers={"Content-Type": content_type},
         status=code,
     )
@@ -257,7 +261,7 @@ class RestApp:
         schema_request=False,
         callback_with_request=False,
         json_request=False,
-        rest_request=False
+        rest_request=False,
     ):
         start_time = time.monotonic()
         resp = None
@@ -286,11 +290,17 @@ class RestApp:
                     body_string = body.decode(charset)
                     rapu_request.json = jsonlib.loads(body_string)
                 except jsonlib.decoder.JSONDecodeError:
-                    raise HTTPResponse(body="Invalid request JSON body", status=HTTPStatus.BAD_REQUEST)
+                    raise HTTPResponse(  # pylint: disable=raise-missing-from
+                        body="Invalid request JSON body", status=HTTPStatus.BAD_REQUEST
+                    )
                 except UnicodeDecodeError:
-                    raise HTTPResponse(body=f"Request body is not valid {charset}", status=HTTPStatus.BAD_REQUEST)
+                    raise HTTPResponse(  # pylint: disable=raise-missing-from
+                        body=f"Request body is not valid {charset}", status=HTTPStatus.BAD_REQUEST
+                    )
                 except LookupError:
-                    raise HTTPResponse(body=f"Unknown charset {charset}", status=HTTPStatus.BAD_REQUEST)
+                    raise HTTPResponse(  # pylint: disable=raise-missing-from
+                        body=f"Unknown charset {charset}", status=HTTPStatus.BAD_REQUEST
+                    )
             else:
                 if body not in {b"", b"{}"}:
                     raise HTTPResponse(body="No request body allowed for this operation", status=HTTPStatus.BAD_REQUEST)
@@ -361,10 +371,13 @@ class RestApp:
             # This exception is not our usual http response, so to keep a consistent error interface
             # we construct http response manually here
             status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-            body = json_encode({
-                "error_code": status,
-                "message": "HTTP Request Entity Too Large",
-            }, binary=True)
+            body = json_encode(
+                {
+                    "error_code": status,
+                    "message": "HTTP Request Entity Too Large",
+                },
+                binary=True,
+            )
             headers = {"Content-Type": "application/json"}
             resp = aiohttp.web.Response(body=body, status=status.value, headers=headers)
         except asyncio.CancelledError:
@@ -383,7 +396,7 @@ class RestApp:
                     # no `resp` means that we had a failure in exception handler
                     "result": resp.status if resp else 0,
                     "method": request.method,
-                }
+                },
             )
 
         return resp
@@ -411,7 +424,7 @@ class RestApp:
                 schema_request=schema_request,
                 callback_with_request=with_request,
                 json_request=json_body,
-                rest_request=rest_request
+                rest_request=rest_request,
             )
 
         async def wrapped_cors(request):
@@ -480,11 +493,12 @@ class RestApp:
 
         return result
 
-    def run(self, *, host, port):
+    def run(self, *, host: str, port: int, ssl_context: Optional[ssl.SSLContext] = None) -> None:
         aiohttp.web.run_app(
             app=self.app,
             host=host,
             port=port,
+            ssl_context=ssl_context,
             access_log_format='%Tfs %{x-client-ip}i "%r" %s "%{user-agent}i" response=%bb request_body=%{content-length}ib',
         )
 
