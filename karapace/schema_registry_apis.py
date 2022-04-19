@@ -8,7 +8,7 @@ from karapace.config import Config
 from karapace.karapace import KarapaceBase
 from karapace.master_coordinator import MasterCoordinator
 from karapace.rapu import HTTPRequest, JSON_CONTENT_TYPE, SERVER_NAME
-from karapace.schema_models import InvalidSchema, InvalidSchemaType, ValidatedTypedSchema
+from karapace.schema_models import InvalidSchema, InvalidSchemaType, ValidatedTypedSchema, References, InvalidReferences
 from karapace.schema_reader import KafkaSchemaReader, SchemaType, TypedSchema
 from karapace.utils import json_encode, KarapaceKafkaClient
 from typing import Any, Dict, Optional, Tuple
@@ -36,6 +36,8 @@ class SchemaErrorCodes(Enum):
     INVALID_VERSION_ID = 42202
     INVALID_COMPATIBILITY_LEVEL = 42203
     INVALID_AVRO_SCHEMA = 44201
+    INVALID_PROTOBUF_SCHEMA = 44202
+    INVALID_REFERECES = 442203
     NO_MASTER_ERROR = 50003
 
 
@@ -113,7 +115,8 @@ class KarapaceSchemaRegistry(KarapaceBase):
         self.route("/config", callback=self.config_get, method="GET", schema_request=True)
         self.route("/config", callback=self.config_set, method="PUT", schema_request=True)
         self.route(
-            "/schemas/ids/<schema_id:path>/versions", callback=self.schemas_get_versions, method="GET", schema_request=True
+            "/schemas/ids/<schema_id:path>/versions", callback=self.schemas_get_versions, method="GET",
+            schema_request=True
         )
         self.route("/schemas/ids/<schema_id:path>", callback=self.schemas_get, method="GET", schema_request=True)
         self.route("/schemas/types", callback=self.schemas_types, method="GET", schema_request=True)
@@ -140,6 +143,12 @@ class KarapaceSchemaRegistry(KarapaceBase):
         self.route(
             "/subjects/<subject:path>/versions/<version>/schema",
             callback=self.subject_version_schema_get,
+            method="GET",
+            schema_request=True,
+        )
+        self.route(
+            "/subjects/<subject:path>/versions/<version>/referencedby",
+            callback=self.subject_version_referencedby_get,
             method="GET",
             schema_request=True,
         )
@@ -262,13 +271,14 @@ class KarapaceSchemaRegistry(KarapaceBase):
         return future
 
     def send_schema_message(
-        self,
-        *,
-        subject: str,
-        schema: Optional[TypedSchema],
-        schema_id: int,
-        version: int,
-        deleted: bool,
+            self,
+            *,
+            subject: str,
+            schema: Optional[TypedSchema],
+            schema_id: int,
+            version: int,
+            deleted: bool,
+            references: Optional[References],
     ):
         key = '{{"subject":"{}","version":{},"magic":1,"keytype":"SCHEMA"}}'.format(subject, version)
         if schema:
@@ -279,6 +289,8 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 "schema": schema.schema_str,
                 "deleted": deleted,
             }
+            if references:
+                valuedict["references"] = references.json()
             if schema.schema_type is not SchemaType.AVRO:
                 valuedict["schemaType"] = schema.schema_type
             value = json_encode(valuedict)
@@ -303,7 +315,8 @@ class KarapaceSchemaRegistry(KarapaceBase):
         """Check for schema compatibility"""
         body = request.json
         self.log.info("Got request to check subject: %r, version_id: %r compatibility", subject, version)
-        old = await self.subject_version_get(content_type=content_type, subject=subject, version=version, return_dict=True)
+        old = await self.subject_version_get(content_type=content_type, subject=subject, version=version,
+                                             return_dict=True)
         self.log.info("Existing schema: %r, new_schema: %r", old["schema"], body["schema"])
         try:
             schema_type = SchemaType(body.get("schemaType", "AVRO"))
@@ -491,7 +504,8 @@ class KarapaceSchemaRegistry(KarapaceBase):
     async def _subject_delete_local(self, content_type: str, subject: str, permanent: bool):
         subject_data = self._subject_get(subject, content_type, include_deleted=permanent)
 
-        if permanent and [version for version, value in subject_data["schemas"].items() if not value.get("deleted", False)]:
+        if permanent and [version for version, value in subject_data["schemas"].items() if
+                          not value.get("deleted", False)]:
             self.r(
                 body={
                     "error_code": SchemaErrorCodes.SUBJECT_NOT_SOFT_DELETED.value,
@@ -510,8 +524,10 @@ class KarapaceSchemaRegistry(KarapaceBase):
         if permanent:
             for version, value in list(subject_data["schemas"].items()):
                 schema_id = value.get("id")
-                self.log.info("Permanently deleting subject '%s' version %s (schema id=%s)", subject, version, schema_id)
-                self.send_schema_message(subject=subject, schema=None, schema_id=schema_id, version=version, deleted=True)
+                self.log.info("Permanently deleting subject '%s' version %s (schema id=%s)", subject, version,
+                              schema_id)
+                self.send_schema_message(subject=subject, schema=None, schema_id=schema_id, version=version,
+                                         deleted=True)
         else:
             self.send_delete_subject_message(subject, latest_schema_id)
         self.r(version_list, content_type, status=HTTPStatus.OK)
@@ -566,6 +582,9 @@ class KarapaceSchemaRegistry(KarapaceBase):
             "id": schema_id,
             "schema": schema.schema_str,
         }
+        references = schema_data.get("references")
+        if references :
+            ret["references"] = references
         if schema.schema_type is not SchemaType.AVRO:
             ret["schemaType"] = schema.schema_type
         if return_dict:
@@ -650,6 +669,26 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 content_type=content_type,
                 status=HTTPStatus.NOT_FOUND,
             )
+        self.r(self.get_referencedby(subject, version), content_type)
+
+    async def subject_version_referencedby_get(self, content_type, *, subject, version):
+        self._validate_version(content_type, version)
+        subject_data = self._subject_get(subject, content_type)
+        max_version = max(subject_data["schemas"])
+
+        if version == "latest":
+            schema_data = subject_data["schemas"][max_version]
+        elif int(version) <= max_version:
+            schema_data = subject_data["schemas"].get(int(version))
+        else:
+            self.r(
+                body={
+                    "error_code": SchemaErrorCodes.VERSION_NOT_FOUND.value,
+                    "message": f"Version {version} not found.",
+                },
+                content_type=content_type,
+                status=HTTPStatus.NOT_FOUND,
+            )
         self.r(schema_data["schema"].schema_str, content_type)
 
     async def subject_versions_list(self, content_type, *, subject):
@@ -679,7 +718,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
         for field in body:
-            if field not in {"schema", "schemaType"}:
+            if field not in {"schema", "schemaType", "references"}:
                 self.r(
                     body={
                         "error_code": SchemaErrorCodes.HTTP_UNPROCESSABLE_ENTITY.value,
@@ -799,6 +838,22 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 content_type=content_type,
                 status=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
+        new_schema_references = None
+        if body.get("references"):
+            b = body.get("references")
+            try:
+                new_schema_references = References(schema_type, body["references"])
+            except InvalidReferences:
+                human_error = "Provided references is not valid"
+                self.r(
+                    body={
+                        "error_code": SchemaErrorCodes.INVALID_REFERECES.value,
+                        "message": f"Invalid {schema_type} references. Error: {human_error}",
+                    },
+                    content_type=content_type,
+                    status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+
         if subject not in self.ksr.subjects or not self.ksr.subjects.get(subject)["schemas"]:
             schema_id = self.ksr.get_schema_id(new_schema)
             version = 1
@@ -830,6 +885,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                     schema_id=schema_id,
                     version=version,
                     deleted=False,
+                    references=new_schema_references
                 )
                 self.r({"id": schema_id}, content_type)
 
@@ -902,6 +958,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
             schema_id=schema_id,
             version=version,
             deleted=False,
+            references=new_schema_references,
         )
         self.r({"id": schema_id}, content_type)
 
@@ -929,3 +986,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
             content_type=content_type,
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
+
+    def get_referencedby(self, subject, version):
+
+        pass

@@ -4,7 +4,7 @@ from jsonschema import ValidationError
 from karapace.client import Client
 from karapace.protobuf.exception import ProtobufTypeException
 from karapace.protobuf.io import ProtobufDatumReader, ProtobufDatumWriter
-from karapace.schema_models import InvalidSchema, SchemaType, TypedSchema, ValidatedTypedSchema
+from karapace.schema_models import InvalidSchema, SchemaType, TypedSchema, ValidatedTypedSchema, References
 from karapace.utils import json_encode
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote
@@ -72,9 +72,13 @@ class SchemaRegistryClient:
         self.client = Client(server_uri=schema_registry_url, server_ca=server_ca)
         self.base_url = schema_registry_url
 
-    async def post_new_schema(self, subject: str, schema: ValidatedTypedSchema) -> int:
+    async def post_new_schema(self, subject: str, schema: ValidatedTypedSchema, references: Optional[References]) -> int:
         if schema.schema_type is SchemaType.PROTOBUF:
-            payload = {"schema": str(schema), "schemaType": schema.schema_type.value}
+            if references :
+                payload = {"schema": str(schema), "schemaType": schema.schema_type.value,
+                           "references": references.json()}
+            else:
+                payload = {"schema": str(schema), "schemaType": schema.schema_type.value}
         else:
             payload = {"schema": json_encode(schema.to_dict()), "schemaType": schema.schema_type.value}
         result = await self.client.post(f"subjects/{quote(subject)}/versions", json=payload)
@@ -82,7 +86,7 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(result.json())
         return result.json()["id"]
 
-    async def get_latest_schema(self, subject: str) -> Tuple[int, ValidatedTypedSchema]:
+    async def get_latest_schema(self, subject: str) -> Tuple[int, ValidatedTypedSchema, Optional[References]]:
         result = await self.client.get(f"subjects/{quote(subject)}/versions/latest")
         if not result.ok:
             raise SchemaRetrievalError(result.json())
@@ -91,11 +95,18 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(f"Invalid result format: {json_result}")
         try:
             schema_type = SchemaType(json_result.get("schemaType", "AVRO"))
-            return json_result["id"], ValidatedTypedSchema.parse(schema_type, json_result["schema"])
+
+            if json_result["references"]:
+                references = References(json_result["references"])
+            else:
+                references = None
+
+            return json_result["id"], ValidatedTypedSchema.parse(schema_type, json_result["schema"]), references
+
         except InvalidSchema as e:
             raise SchemaRetrievalError(f"Failed to parse schema string from response: {json_result}") from e
 
-    async def get_schema_for_id(self, schema_id: int) -> ValidatedTypedSchema:
+    async def get_schema_for_id(self, schema_id: int) -> Tuple[ValidatedTypedSchema, Optional[References]] :
         result = await self.client.get(f"schemas/ids/{schema_id}")
         if not result.ok:
             raise SchemaRetrievalError(result.json()["message"])
@@ -104,7 +115,13 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(f"Invalid result format: {json_result}")
         try:
             schema_type = SchemaType(json_result.get("schemaType", "AVRO"))
-            return ValidatedTypedSchema.parse(schema_type, json_result["schema"])
+            if json_result["references"]:
+                references = References(json_result["references"])
+            else:
+                references = None
+
+            return ValidatedTypedSchema.parse(schema_type, json_result["schema"]), references
+
         except InvalidSchema as e:
             raise SchemaRetrievalError(f"Failed to parse schema string from response: {json_result}") from e
 
@@ -114,10 +131,10 @@ class SchemaRegistryClient:
 
 class SchemaRegistrySerializerDeserializer:
     def __init__(
-        self,
-        config: dict,
-        name_strategy: str = "topic_name",
-        **cfg,  # pylint: disable=unused-argument
+            self,
+            config: dict,
+            name_strategy: str = "topic_name",
+            **cfg,  # pylint: disable=unused-argument
     ) -> None:
         self.config = config
         self.state_lock = asyncio.Lock()
@@ -151,7 +168,7 @@ class SchemaRegistrySerializerDeserializer:
 
     async def get_schema_for_subject(self, subject: str) -> TypedSchema:
         assert self.registry_client, "must not call this method after the object is closed."
-        schema_id, schema = await self.registry_client.get_latest_schema(subject)
+        schema_id, schema, references = await self.registry_client.get_latest_schema(subject)
         async with self.state_lock:
             schema_ser = schema.__str__()
             self.schemas_to_ids[schema_ser] = schema_id

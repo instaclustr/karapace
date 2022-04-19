@@ -326,6 +326,7 @@ class KafkaSchemaReader(Thread):
         schema_id = value["id"]
         schema_version = value["version"]
         schema_deleted = value.get("deleted", False)
+        schema_references = value.get("references", None)
 
         try:
             schema_type_parsed = SchemaType(schema_type)
@@ -361,6 +362,9 @@ class KafkaSchemaReader(Thread):
             "id": schema_id,
             "deleted": schema_deleted,
         }
+        if schema_references:
+            subjects_schemas[schema_version]["references"] = schema_references
+
         with self.id_lock:
             self.schemas[schema_id] = typed_schema
             self.global_schema_id = max(self.global_schema_id, schema_id)

@@ -13,7 +13,7 @@ from karapace.protobuf.exception import (
 )
 from karapace.protobuf.schema import ProtobufSchema
 from karapace.utils import json_encode
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, List
 
 import json
 import logging
@@ -71,6 +71,10 @@ class InvalidSchema(Exception):
     pass
 
 
+class InvalidReferences(Exception):
+    pass
+
+
 @unique
 class SchemaType(str, Enum):
     AVRO = "AVRO"
@@ -105,11 +109,13 @@ class TypedSchema:
         return f"TypedSchema(type={self.schema_type}, schema={json_encode(self.to_dict())})"
 
     def __eq__(self, other: Any) -> bool:
-        return isinstance(other, TypedSchema) and self.__str__() == other.__str__() and self.schema_type is other.schema_type
+        return isinstance(other,
+                          TypedSchema) and self.__str__() == other.__str__() and self.schema_type is other.schema_type
 
 
 class ValidatedTypedSchema(TypedSchema):
-    def __init__(self, schema_type: SchemaType, schema_str: str, schema: Union[Draft7Validator, AvroSchema, ProtobufSchema]):
+    def __init__(self, schema_type: SchemaType, schema_str: str,
+                 schema: Union[Draft7Validator, AvroSchema, ProtobufSchema]):
         super().__init__(schema_type=schema_type, schema_str=schema_str)
         self.schema = schema
 
@@ -136,15 +142,15 @@ class ValidatedTypedSchema(TypedSchema):
             try:
                 parsed_schema = parse_protobuf_schema_definition(schema_str)
             except (
-                TypeError,
-                SchemaError,
-                AssertionError,
-                ProtobufParserRuntimeException,
-                IllegalStateException,
-                IllegalArgumentException,
-                ProtobufError,
-                ProtobufException,
-                ProtobufSchemaParseException,
+                    TypeError,
+                    SchemaError,
+                    AssertionError,
+                    ProtobufParserRuntimeException,
+                    IllegalStateException,
+                    IllegalArgumentException,
+                    ProtobufError,
+                    ProtobufException,
+                    ProtobufSchemaParseException,
             ) as e:
                 log.exception("Unexpected error: %s \n schema:[%s]", e, schema_str)
                 raise InvalidSchema from e
@@ -157,3 +163,18 @@ class ValidatedTypedSchema(TypedSchema):
         if self.schema_type == SchemaType.PROTOBUF:
             return str(self.schema)
         return super().__str__()
+
+
+class References:
+    def __init__(self, schema_type: SchemaType, references: List):
+        """Schema with type information
+
+        Args:
+            schema_type (SchemaType): The type of the schema
+            references (str): The original schema string
+        """
+        self.schema_type = schema_type
+        self.references = references
+
+    def json(self) -> str:
+        return json_encode(self.references)
