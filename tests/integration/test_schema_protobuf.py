@@ -8,9 +8,9 @@ from karapace.client import Client
 from karapace.protobuf.kotlin_wrapper import trim_margin
 from tests.utils import create_subject_name_factory
 
+import json
 import logging
 import pytest
-import json
 
 baseurl = "http://localhost:8081"
 
@@ -109,7 +109,7 @@ async def test_protobuf_schema_compatibility(registry_async_client: Client, trai
 
 async def test_protobuf_schema_references(registry_async_client: Client) -> None:
 
-    customer_schema = """ 
+    customer_schema = """
             |syntax = "proto3";
             |package a1;
             |message Customer {
@@ -117,13 +117,13 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
             |        int32 code = 2;
             |}
             |"""
+
     customer_schema = trim_margin(customer_schema)
     res = await registry_async_client.post(
-        f"subjects/customer/versions", json={"schemaType": "PROTOBUF", "schema": customer_schema}
+        "subjects/customer/versions", json={"schemaType": "PROTOBUF", "schema": customer_schema}
     )
     assert res.status_code == 200
     assert "id" in res.json()
-
     original_schema = """
             |syntax = "proto3";
             |package a1;
@@ -139,24 +139,17 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
             |"""
 
     original_schema = trim_margin(original_schema)
-    references = [{"name": "Customer.proto",
-                              "subject": "customer",
-                              "version": 1}]
+    references = [{"name": "Customer.proto", "subject": "customer", "version": 1}]
     res = await registry_async_client.post(
-        f"subjects/test_schema/versions",
-        json={"schemaType": "PROTOBUF",
-              "schema": original_schema,
-              "references": references}
+        "subjects/test_schema/versions",
+        json={"schemaType": "PROTOBUF", "schema": original_schema, "references": references},
     )
     assert res.status_code == 200
     assert "id" in res.json()
-    res = await registry_async_client.get(
-        f"subjects/test_schema/versions/latest", json={} )
+    res = await registry_async_client.get("subjects/test_schema/versions/latest", json={})
     assert res.status_code == 200
     myjson = res.json()
     assert "id" in myjson
-    references = [{"name": "Customer.proto",
-                   "subject": "customer",
-                   "version": 1}]
+    references = [{"name": "Customer.proto", "subject": "customer", "version": 1}]
     refs2 = json.loads(myjson["references"])
     assert not any(x != y for x, y in zip(refs2, references))
