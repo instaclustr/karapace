@@ -163,7 +163,7 @@ class SchemaRegistrySerializerDeserializer:
     async def get_schema_for_subject(self, subject: str) -> TypedSchema:
         assert self.registry_client, "must not call this method after the object is closed."
         # pylint: disable=unused-variable
-        schema_id, schema, references = await self.registry_client.get_latest_schema(subject)
+        schema_id, schema = await self.registry_client.get_latest_schema(subject)
         async with self.state_lock:
             schema_ser = schema.__str__()
             self.schemas_to_ids[schema_ser] = schema_id
