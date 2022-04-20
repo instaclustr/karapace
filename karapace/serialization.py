@@ -85,7 +85,7 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(result.json())
         return result.json()["id"]
 
-    async def get_latest_schema(self, subject: str) -> Tuple[int, ValidatedTypedSchema, References]:
+    async def get_latest_schema(self, subject: str) -> Tuple[int, ValidatedTypedSchema]:
         result = await self.client.get(f"subjects/{quote(subject)}/versions/latest")
         if not result.ok:
             raise SchemaRetrievalError(result.json())
@@ -94,12 +94,8 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(f"Invalid result format: {json_result}")
         try:
             schema_type = SchemaType(json_result.get("schemaType", "AVRO"))
-            if json_result["references"]:
-                references = References(schema_type, json_result["references"])
-            else:
-                references = None
 
-            return json_result["id"], ValidatedTypedSchema.parse(schema_type, json_result["schema"]), references
+            return json_result["id"], ValidatedTypedSchema.parse(schema_type, json_result["schema"])
 
         except InvalidSchema as e:
             raise SchemaRetrievalError(f"Failed to parse schema string from response: {json_result}") from e
