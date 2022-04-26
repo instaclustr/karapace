@@ -72,7 +72,9 @@ class SchemaRegistryClient:
         self.client = Client(server_uri=schema_registry_url, server_ca=server_ca)
         self.base_url = schema_registry_url
 
-    async def post_new_schema(self, subject: str, schema: ValidatedTypedSchema, references: Optional[References]) -> int:
+    async def post_new_schema(
+        self, subject: str, schema: ValidatedTypedSchema, references: Optional[References] = None
+    ) -> int:
         if schema.schema_type is SchemaType.PROTOBUF:
             if references:
                 payload = {"schema": str(schema), "schemaType": schema.schema_type.value, "references": references.json()}
@@ -109,8 +111,9 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(f"Invalid result format: {json_result}")
         try:
             schema_type = SchemaType(json_result.get("schemaType", "AVRO"))
-            if json_result["references"]:
-                references = References(schema_type, json_result["references"])
+            references_str = json_result.get("references")
+            if references_str:
+                references = References(schema_type, references_str)
             else:
                 references = None
 
