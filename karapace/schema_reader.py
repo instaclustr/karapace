@@ -4,9 +4,10 @@ karapace - Kafka schema reader
 Copyright (c) 2019 Aiven Ltd
 See LICENSE for details
 """
+from contextlib import closing, ExitStack
 from kafka import KafkaConsumer
 from kafka.admin import KafkaAdminClient, NewTopic
-from kafka.errors import NoBrokersAvailable, NodeNotReadyError, TopicAlreadyExistsError
+from kafka.errors import KafkaConfigurationError, NoBrokersAvailable, NodeNotReadyError, TopicAlreadyExistsError
 from karapace import constants
 from karapace.config import Config
 from karapace.master_coordinator import MasterCoordinator
@@ -17,10 +18,8 @@ from threading import Event, Lock, Thread
 from typing import Any, Dict, Optional
 
 import logging
-import time
 import ujson
 
-log = logging.getLogger(__name__)
 Offset = int
 Subject = str
 Version = int
@@ -31,6 +30,59 @@ SubjectData = Dict[str, Any]
 # The value `0` is a valid offset and it represents the first message produced
 # to a topic, therefore it can not be used.
 OFFSET_EMPTY = -1
+LOG = logging.getLogger(__name__)
+
+KAFKA_CLIENT_CREATION_TIMEOUT_SECONDS = 2.0
+SCHEMA_TOPIC_CREATION_TIMEOUT_SECONDS = 5.0
+
+
+def _create_consumer_from_config(config: Config) -> KafkaConsumer:
+    # Group not set on purpose, all consumers read the same data
+    session_timeout_ms = config["session_timeout_ms"]
+    request_timeout_ms = max(session_timeout_ms, KafkaConsumer.DEFAULT_CONFIG["request_timeout_ms"])
+    return KafkaConsumer(
+        config["topic_name"],
+        enable_auto_commit=False,
+        api_version=(1, 0, 0),
+        bootstrap_servers=config["bootstrap_uri"],
+        client_id=config["client_id"],
+        security_protocol=config["security_protocol"],
+        ssl_cafile=config["ssl_cafile"],
+        ssl_certfile=config["ssl_certfile"],
+        ssl_keyfile=config["ssl_keyfile"],
+        sasl_mechanism=config["sasl_mechanism"],
+        sasl_plain_username=config["sasl_plain_username"],
+        sasl_plain_password=config["sasl_plain_password"],
+        auto_offset_reset="earliest",
+        session_timeout_ms=session_timeout_ms,
+        request_timeout_ms=request_timeout_ms,
+        kafka_client=KarapaceKafkaClient,
+        metadata_max_age_ms=config["metadata_max_age_ms"],
+    )
+
+
+def _create_admin_client_from_config(config: Config) -> KafkaAdminClient:
+    return KafkaAdminClient(
+        api_version_auto_timeout_ms=constants.API_VERSION_AUTO_TIMEOUT_MS,
+        bootstrap_servers=config["bootstrap_uri"],
+        client_id=config["client_id"],
+        security_protocol=config["security_protocol"],
+        ssl_cafile=config["ssl_cafile"],
+        ssl_certfile=config["ssl_certfile"],
+        ssl_keyfile=config["ssl_keyfile"],
+        sasl_mechanism=config["sasl_mechanism"],
+        sasl_plain_username=config["sasl_plain_username"],
+        sasl_plain_password=config["sasl_plain_password"],
+    )
+
+
+def new_schema_topic_from_config(config: Config) -> NewTopic:
+    return NewTopic(
+        name=config["topic_name"],
+        num_partitions=constants.SCHEMA_TOPIC_NUM_PARTITIONS,
+        replication_factor=config["replication_factor"],
+        topic_configs={"cleanup.policy": "compact"},
+    )
 
 
 class OffsetsWatcher:
@@ -83,18 +135,15 @@ class KafkaSchemaReader(Thread):
     ) -> None:
         Thread.__init__(self, name="schema-reader")
         self.master_coordinator = master_coordinator
-        self.log = logging.getLogger("KafkaSchemaReader")
         self.timeout_ms = 200
         self.config = config
         self.subjects: Dict[Subject, SubjectData] = {}
         self.schemas: Dict[int, TypedSchema] = {}
         self.global_schema_id = 0
         self.admin_client: Optional[KafkaAdminClient] = None
-        self.schema_topic = None
         self.topic_replication_factor = self.config["replication_factor"]
         self.consumer: Optional[KafkaConsumer] = None
         self.offset_watcher = OffsetsWatcher()
-        self.running = True
         self.id_lock = Lock()
         self.stats = StatsClient(
             sentry_config=config["sentry"],  # type: ignore[arg-type]
@@ -114,80 +163,9 @@ class KafkaSchemaReader(Thread):
         self.offset = OFFSET_EMPTY
         self.ready = False
 
-    def init_consumer(self) -> None:
-        # Group not set on purpose, all consumers read the same data
-        session_timeout_ms = self.config["session_timeout_ms"]
-        request_timeout_ms = max(session_timeout_ms, KafkaConsumer.DEFAULT_CONFIG["request_timeout_ms"])
-        self.consumer = KafkaConsumer(
-            self.config["topic_name"],
-            enable_auto_commit=False,
-            api_version=(1, 0, 0),
-            bootstrap_servers=self.config["bootstrap_uri"],
-            client_id=self.config["client_id"],
-            security_protocol=self.config["security_protocol"],
-            ssl_cafile=self.config["ssl_cafile"],
-            ssl_certfile=self.config["ssl_certfile"],
-            ssl_keyfile=self.config["ssl_keyfile"],
-            sasl_mechanism=self.config["sasl_mechanism"],
-            sasl_plain_username=self.config["sasl_plain_username"],
-            sasl_plain_password=self.config["sasl_plain_password"],
-            auto_offset_reset="earliest",
-            session_timeout_ms=session_timeout_ms,
-            request_timeout_ms=request_timeout_ms,
-            kafka_client=KarapaceKafkaClient,
-            metadata_max_age_ms=self.config["metadata_max_age_ms"],
-        )
-
-    def init_admin_client(self) -> bool:
-        try:
-            self.admin_client = KafkaAdminClient(
-                api_version_auto_timeout_ms=constants.API_VERSION_AUTO_TIMEOUT_MS,
-                bootstrap_servers=self.config["bootstrap_uri"],
-                client_id=self.config["client_id"],
-                security_protocol=self.config["security_protocol"],
-                ssl_cafile=self.config["ssl_cafile"],
-                ssl_certfile=self.config["ssl_certfile"],
-                ssl_keyfile=self.config["ssl_keyfile"],
-                sasl_mechanism=self.config["sasl_mechanism"],
-                sasl_plain_username=self.config["sasl_plain_username"],
-                sasl_plain_password=self.config["sasl_plain_password"],
-            )
-            return True
-        except (NodeNotReadyError, NoBrokersAvailable, AssertionError):
-            self.log.warning("No Brokers available yet, retrying init_admin_client()")
-            time.sleep(2.0)
-        except:  # pylint: disable=bare-except
-            self.log.exception("Failed to initialize admin client, retrying init_admin_client()")
-            time.sleep(2.0)
-        return False
-
-    @staticmethod
-    def get_new_schema_topic(config: dict) -> NewTopic:
-        return NewTopic(
-            name=config["topic_name"],
-            num_partitions=constants.SCHEMA_TOPIC_NUM_PARTITIONS,
-            replication_factor=config["replication_factor"],
-            topic_configs={"cleanup.policy": "compact"},
-        )
-
-    def create_schema_topic(self) -> bool:
-        assert self.admin_client is not None, "Thread must be started"
-
-        schema_topic = self.get_new_schema_topic(self.config)
-        try:
-            self.log.info("Creating topic: %r", schema_topic)
-            self.admin_client.create_topics([schema_topic], timeout_ms=constants.TOPIC_CREATION_TIMEOUT_MS)
-            self.log.info("Topic: %r created successfully", self.config["topic_name"])
-            self.schema_topic = schema_topic
-            return True
-        except TopicAlreadyExistsError:
-            self.log.warning("Topic: %r already exists", self.config["topic_name"])
-            self.schema_topic = schema_topic
-            return True
-        except:  # pylint: disable=bare-except
-            self.log.exception("Failed to create topic: %r, retrying create_schema_topic()", self.config["topic_name"])
-            time.sleep(5)
-        return False
+        # This event controls when the Reader should stop running, it will be
+        # set by another thread (e.g. `KarapaceSchemaRegistry`)
+        self._stop = Event()
 
     def get_schema_id(self, new_schema: TypedSchema) -> int:
         with self.id_lock:
@@ -198,34 +176,63 @@ class KafkaSchemaReader(Thread):
             return self.global_schema_id
 
     def close(self) -> None:
-        self.log.info("Closing schema_reader")
-        self.running = False
+        LOG.info("Closing schema_reader")
+        self._stop.set()
 
     def run(self) -> None:
-        while self.running:
-            try:
-                if not self.admin_client:
-                    if self.init_admin_client() is False:
-                        continue
-                if not self.schema_topic:
-                    if self.create_schema_topic() is False:
-                        continue
-                if not self.consumer:
-                    self.init_consumer()
-                self.handle_messages()
-            except Exception as e:  # pylint: disable=broad-except
-                if self.stats:
+        with ExitStack() as stack:
+            while not self._stop.is_set() and self.admin_client is None:
+                try:
+                    self.admin_client = _create_admin_client_from_config(self.config)
+                    stack.enter_context(closing(self.admin_client))
+                except (NodeNotReadyError, NoBrokersAvailable, AssertionError):
+                    LOG.warning("[Admin Client] No Brokers available yet. Retrying")
+                    self._stop.wait(timeout=KAFKA_CLIENT_CREATION_TIMEOUT_SECONDS)
+                except KafkaConfigurationError:
+                    LOG.exception("[Admin Client] Invalid configuration. Bailing")
+                    raise
+                except Exception as e:  # pylint: disable=broad-except
+                    LOG.exception("[Admin Client] Unexpected exception. Retrying")
+                    self.stats.unexpected_exception(ex=e, where="admin_client_instantiation")
+                    self._stop.wait(timeout=2.0)
+
+            while not self._stop.is_set() and self.consumer is None:
+                try:
+                    self.consumer = _create_consumer_from_config(self.config)
+                    stack.enter_context(closing(self.consumer))
+                except (NodeNotReadyError, NoBrokersAvailable, AssertionError):
+                    LOG.warning("[Consumer] No Brokers available yet. Retrying")
+                    self._stop.wait(timeout=2.0)
+                except KafkaConfigurationError:
+                    LOG.exception("[Consumer] Invalid configuration. Bailing")
+                    raise
+                except Exception as e:  # pylint: disable=broad-except
+                    LOG.exception("[Consumer] Unexpected exception. Retrying")
+                    self.stats.unexpected_exception(ex=e, where="consumer_instantiation")
+                    self._stop.wait(timeout=KAFKA_CLIENT_CREATION_TIMEOUT_SECONDS)
+
+            schema_topic_exists = False
+            schema_topic = new_schema_topic_from_config(self.config)
+            schema_topic_create = [schema_topic]
+            while not self._stop.is_set() and not schema_topic_exists:
+                try:
+                    LOG.info("[Schema Topic] Creating %r", schema_topic)
+                    self.admin_client.create_topics(schema_topic_create, timeout_ms=constants.TOPIC_CREATION_TIMEOUT_MS)
+                    LOG.info("[Schema Topic] Successfully created %r", schema_topic.name)
+                    schema_topic_exists = True
+                except TopicAlreadyExistsError:
+                    LOG.warning("[Schema Topic] Already exists %r", schema_topic.name)
+                    schema_topic_exists = True
+                except:  # pylint: disable=bare-except
+                    LOG.exception("[Schema Topic] Failed to create %r, retrying", schema_topic.name)
+                    self._stop.wait(timeout=SCHEMA_TOPIC_CREATION_TIMEOUT_SECONDS)
+
+            while not self._stop.is_set():
+                try:
+                    self.handle_messages()
+                except Exception as e:  # pylint: disable=broad-except
                     self.stats.unexpected_exception(ex=e, where="schema_reader_loop")
-                self.log.exception("Unexpected exception in schema reader loop")
-        try:
-            if self.admin_client:
-                self.admin_client.close()
-            if self.consumer:
-                self.consumer.close()
-        except Exception as e:  # pylint: disable=broad-except
-            if self.stats:
-                self.stats.unexpected_exception(ex=e, where="schema_reader_exit")
-            self.log.exception("Unexpected exception closing schema reader")
+                    LOG.exception("Unexpected exception in schema reader loop")
 
     def handle_messages(self) -> None:
         assert self.consumer is not None, "Thread must be started"
@@ -248,7 +255,7 @@ class KafkaSchemaReader(Thread):
                 try:
                     key = ujson.loads(msg.key.decode("utf8"))
                 except ValueError:
-                    self.log.exception("Invalid JSON in msg.key: %r, value: %r", msg.key, msg.value)
+                    LOG.exception("Invalid JSON in msg.key")
                     continue
 
                 value = None
@@ -256,18 +263,11 @@ class KafkaSchemaReader(Thread):
                     try:
                         value = ujson.loads(msg.value.decode("utf8"))
                     except ValueError:
-                        self.log.exception("Invalid JSON in msg.value: %r, key: %r", msg.value, msg.key)
+                        LOG.exception("Invalid JSON in msg.value")
                         continue
 
-                self.log.info("Read new record: key: %r, value: %r, offset: %r", key, value, msg.offset)
                 self.handle_msg(key, value)
                 self.offset = msg.offset
-                self.log.info(
-                    "Handled message, current offset: %r, ready: %r, add_offsets: %r",
-                    self.offset,
-                    self.ready,
-                    add_offsets,
-                )
                 if self.ready and add_offsets:
                     self.offset_watcher.offset_seen(self.offset)
 
@@ -275,29 +275,29 @@ class KafkaSchemaReader(Thread):
         subject = key.get("subject")
         if subject is not None:
             if subject not in self.subjects:
-                self.log.info("Adding first version of subject: %r with no schemas", subject)
+                LOG.info("Adding first version of subject: %r with no schemas", subject)
                 self.subjects[subject] = {"schemas": {}}
 
             if not value:
-                self.log.info("Deleting compatibility config completely for subject: %r", subject)
+                LOG.info("Deleting compatibility config completely for subject: %r", subject)
                 self.subjects[subject].pop("compatibility", None)
             else:
-                self.log.info("Setting subject: %r config to: %r, value: %r", subject, value["compatibilityLevel"], value)
+                LOG.info("Setting subject: %r config to: %r, value: %r", subject, value["compatibilityLevel"], value)
                 self.subjects[subject]["compatibility"] = value["compatibilityLevel"]
         elif value is not None:
-            self.log.info("Setting global config to: %r, value: %r", value["compatibilityLevel"], value)
+            LOG.info("Setting global config to: %r, value: %r", value["compatibilityLevel"], value)
             self.config["compatibility"] = value["compatibilityLevel"]
 
     def _handle_msg_delete_subject(self, key: dict, value: Optional[dict]) -> None:  # pylint: disable=unused-argument
         if value is None:
-            self.log.error("DELETE_SUBJECT record doesnt have a value, should have")
+            LOG.error("DELETE_SUBJECT record doesnt have a value, should have")
             return
 
         subject = value["subject"]
         if subject not in self.subjects:
-            self.log.error("Subject: %r did not exist, should have", subject)
+            LOG.error("Subject: %r did not exist, should have", subject)
         else:
-            self.log.info("Deleting subject: %r, value: %r", subject, value)
+            LOG.info("Deleting subject: %r, value: %r", subject, value)
             updated_schemas = {
                 key: self._delete_schema_below_version(schema, value["version"])
                 for key, schema in self.subjects[subject]["schemas"].items()
@@ -308,11 +308,11 @@ class KafkaSchemaReader(Thread):
         subject, version = key["subject"], key["version"]
 
         if subject not in self.subjects:
-            self.log.error("Hard delete: Subject %s did not exist, should have", subject)
+            LOG.error("Hard delete: Subject %s did not exist, should have", subject)
         elif version not in self.subjects[subject]["schemas"]:
-            self.log.error("Hard delete: Version %d for subject %s did not exist, should have", version, subject)
+            LOG.error("Hard delete: Version %d for subject %s did not exist, should have", version, subject)
         else:
-            self.log.info("Hard delete: subject: %r version: %r", subject, version)
+            LOG.info("Hard delete: subject: %r version: %r", subject, version)
             self.subjects[subject]["schemas"].pop(version, None)
 
     def _handle_msg_schema(self, key: dict, value: Optional[dict]) -> None:
@@ -331,7 +331,7 @@ class KafkaSchemaReader(Thread):
         try:
             schema_type_parsed = SchemaType(schema_type)
         except ValueError:
-            self.log.error("Invalid schema type: %s", schema_type)
+            LOG.error("Invalid schema type: %s", schema_type)
             return
 
         # Protobuf doesn't use JSON
@@ -339,24 +339,20 @@ class KafkaSchemaReader(Thread):
             try:
                 ujson.loads(schema_str)
             except ValueError:
-                self.log.error("Invalid json: %s", value["schema"])
+                LOG.error("Schema is not invalid JSON")
                 return
 
-        typed_schema = TypedSchema(schema_type=schema_type_parsed, schema_str=schema_str)
-        self.log.debug("Got typed schema %r", typed_schema)
-
         if schema_subject not in self.subjects:
-            self.log.info("Adding first version of subject: %r with no schemas", schema_subject)
+            LOG.info("Adding first version of subject: %r with no schemas", schema_subject)
             self.subjects[schema_subject] = {"schemas": {}}
 
         subjects_schemas = self.subjects[schema_subject]["schemas"]
 
-        if schema_version in subjects_schemas:
-            self.log.info("Updating entry for subject: %r, value: %r", schema_subject, value)
-        else:
-            self.log.info("Adding new version of subject: %r, value: %r", schema_subject, value)
-
-        subjects_schemas[schema_version] = {
+        typed_schema = TypedSchema(
+            schema_type=schema_type_parsed,
+            schema_str=schema_str,
+        )
+        schema = {
             "schema": typed_schema,
             "version": schema_version,
             "id": schema_id,
@@ -364,6 +360,12 @@ class KafkaSchemaReader(Thread):
         }
         if schema_references:
             subjects_schemas[schema_version]["references"] = schema_references
+        if schema_version in subjects_schemas:
+            LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+        else:
+            LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+
+        subjects_schemas[schema_version] = schema
 
         with self.id_lock:
             self.schemas[schema_id] = typed_schema

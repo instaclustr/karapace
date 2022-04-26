@@ -6,16 +6,17 @@ See LICENSE for details
 """
 from aiohttp import ClientSession
 from collections.abc import Mapping
+from karapace.typing import JsonData
 from typing import Awaitable, Callable, Optional, Union
 from urllib.parse import urljoin
 
 import logging
 import ssl
 
-log = logging.getLogger(__name__)
 Path = str
 Headers = dict
-JsonData = object  # Type of the result after parsing JSON
+
+LOG = logging.getLogger(__name__)
 
 
 async def _get_aiohttp_client() -> ClientSession:
@@ -74,7 +75,7 @@ class Client:
             if self._client is not None:
                 await self._client.close()
         except:  # pylint: disable=bare-except
-            log.info("Could not close client")
+            LOG.error("Could not close client")
 
     async def get_client(self) -> ClientSession:
         if self._client is None:

@@ -6,10 +6,10 @@ See LICENSE for details
 """
 from http import HTTPStatus
 from kafka import KafkaProducer
-from karapace import config
 from karapace.client import Client
 from karapace.rapu import is_success
-from karapace.schema_registry_apis import KarapaceSchemaRegistry, SchemaErrorMessages
+from karapace.schema_registry_apis import SchemaErrorMessages
+from tests.integration.utils.cluster import RegistryDescription
 from tests.integration.utils.kafka_server import KafkaServers
 from tests.utils import (
     create_field_name_factory,
@@ -267,6 +267,69 @@ async def test_compatibility_endpoint(registry_async_client: Client, trail: str)
     )
     assert res.status_code == 200
     assert res.json() == {"is_compatible": False}
+
+
+@pytest.mark.parametrize("trail", ["", "/"])
+async def test_regression_compatibility_should_not_give_internal_server_error_on_invalid_schema_type(
+    registry_async_client: Client,
+    trail: str,
+) -> None:
+    test_name = "test_regression_compatibility_should_not_give_internal_server_error_on_invalid_schema_type"
+    subject = create_subject_name_factory(test_name)()
+    schema_name = create_schema_name_factory(test_name)()
+
+    schema = {
+        "type": "record",
+        "name": schema_name,
+        "fields": [
+            {
+                "name": "age",
+                "type": "int",
+            },
+        ],
+    }
+
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions{trail}",
+        json={"schema": ujson.dumps(schema)},
+    )
+    assert res.status_code == 200
+
+    # replace int with long
+    res = await registry_async_client.post(
+        f"compatibility/subjects/{subject}/versions/latest{trail}",
+        json={"schema": ujson.dumps(schema), "schemaType": "AVROO"},
+    )
+    assert res.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert res.json()["error_code"] == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.parametrize("trail", ["", "/"])
+async def test_regression_invalid_schema_type_should_not_give_internal_server_error(
+    registry_async_client: Client,
+    trail: str,
+) -> None:
+    test_name = "test_regression_invalid_schema_type_should_not_give_internal_server_error"
+    subject = create_subject_name_factory(test_name)()
+    schema_name = create_schema_name_factory(test_name)()
+
+    schema = {
+        "type": "record",
+        "name": schema_name,
+        "fields": [
+            {
+                "name": "age",
+                "type": "int",
+            },
+        ],
+    }
+
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions{trail}",
+        json={"schema": ujson.dumps(schema), "schemaType": "AVROO"},
+    )
+    assert res.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert res.json()["error_code"] == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 @pytest.mark.parametrize("trail", ["", "/"])
@@ -863,12 +926,12 @@ async def assert_schema_versions(client: Client, trail: str, schema_id: int, exp
     """
     res = await client.get(f"/schemas/ids/{schema_id}/versions{trail}")
     assert res.status_code == 200
+    registered_schemas = res.json()
 
     # Schema Registry doesn't return an ordered list, Karapace does.
     # Need to check equality ignoring ordering.
-    assert len(res.json()) == len(expected)
-    for e in ({"subject": e[0], "version": e[1]} for e in expected):
-        assert e in res.json()
+    result = [(schema["subject"], schema["version"]) for schema in registered_schemas]
+    assert set(result) == set(expected)
 
 
 async def assert_schema_versions_failed(client: Client, trail: str, schema_id: int, response_code: int = 404) -> None:
@@ -1526,6 +1589,41 @@ async def test_schema_same_subject(registry_async_client: Client, trail: str) ->
     assert json == {"id": schema_id, "subject": subject, "schema": ujson.loads(schema_str), "version": 1}
 
 
+async def test_schema_same_subject_unnamed(registry_async_client: Client) -> None:
+    """
+    The same schema JSON should be returned when checking the same schema str against the same subject
+    """
+    subject_name_factory = create_subject_name_factory("test_schema_same_subject_unnamed")
+    schema_name = create_schema_name_factory("test_schema_same_subject_unnamed")()
+
+    schema_str = ujson.dumps(
+        {
+            "type": "int",
+            "name": schema_name,
+        }
+    )
+    subject = subject_name_factory()
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions",
+        json={"schema": schema_str},
+    )
+    assert res.status_code == 200
+    schema_id = res.json()["id"]
+
+    unnamed_schema_str = ujson.dumps({"type": "int"})
+
+    res = await registry_async_client.post(
+        f"subjects/{subject}",
+        json={"schema": unnamed_schema_str},
+    )
+    assert res.status_code == 200
+
+    # Switch the str schema to a dict for comparison
+    json = res.json()
+    json["schema"] = ujson.loads(json["schema"])
+    assert json == {"id": schema_id, "subject": subject, "schema": ujson.loads(schema_str), "version": 1}
+
+
 @pytest.mark.parametrize("trail", ["", "/"])
 async def test_schema_version_number_existing_schema(registry_async_client: Client, trail: str) -> None:
     """
@@ -1895,13 +1993,10 @@ async def test_schema_remains_constant(registry_async_client: Client) -> None:
 
 
 async def test_malformed_kafka_message(
-    kafka_servers: KafkaServers, registry_async: KarapaceSchemaRegistry, registry_async_client: Client
+    kafka_servers: KafkaServers,
+    registry_cluster: RegistryDescription,
+    registry_async_client: Client,
 ) -> None:
-    if registry_async:
-        topic = registry_async.config["topic_name"]
-    else:
-        topic = config.DEFAULTS["topic_name"]
-
     producer = KafkaProducer(bootstrap_servers=kafka_servers.bootstrap_servers)
     message_key = {"subject": "foo", "version": 1, "magic": 1, "keytype": "SCHEMA"}
     import random
@@ -1910,7 +2005,9 @@ async def test_malformed_kafka_message(
     payload = {"schema": jsonlib.dumps({"foo": "bar"}, indent=None, separators=(",", ":"))}
     message_value = {"deleted": False, "id": schema_id, "subject": "foo", "version": 1}
     message_value.update(payload)
-    producer.send(topic, key=ujson.dumps(message_key).encode(), value=ujson.dumps(message_value).encode()).get()
+    producer.send(
+        registry_cluster.schemas_topic, key=ujson.dumps(message_key).encode(), value=ujson.dumps(message_value).encode()
+    ).get()
 
     path = f"schemas/ids/{schema_id}"
     res = await repeat_until_successful_request(
