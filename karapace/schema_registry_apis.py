@@ -283,7 +283,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 "deleted": deleted,
             }
             if references:
-                valuedict["references"] = references.json()
+                valuedict["references"] = references.val()
             if schema.schema_type is not SchemaType.AVRO:
                 valuedict["schemaType"] = schema.schema_type
             value = json_encode(valuedict)
@@ -804,22 +804,6 @@ class KarapaceSchemaRegistry(KarapaceBase):
     ) -> NoReturn:
         """Since we're the master we get to write the new schema"""
         self.log.info("Writing new schema locally since we're the master")
-        try:
-            new_schema = ValidatedTypedSchema.parse(schema_type=schema_type, schema_str=body["schema"])
-        except (InvalidSchema, InvalidSchemaType) as e:
-            self.log.warning("Invalid schema: %r", body["schema"], exc_info=True)
-            if isinstance(e.__cause__, (SchemaParseException, ValueError)):
-                human_error = f"{e.__cause__.args[0]}"  # pylint: disable=no-member
-            else:
-                human_error = "Provided schema is not valid"
-            self.r(
-                body={
-                    "error_code": SchemaErrorCodes.INVALID_AVRO_SCHEMA.value,
-                    "message": f"Invalid {schema_type} schema. Error: {human_error}",
-                },
-                content_type=content_type,
-                status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            )
         new_schema_references = None
         if body.get("references"):
             try:
@@ -834,6 +818,24 @@ class KarapaceSchemaRegistry(KarapaceBase):
                     content_type=content_type,
                     status=HTTPStatus.UNPROCESSABLE_ENTITY,
                 )
+        try:
+            new_schema = ValidatedTypedSchema.parse(
+                schema_type=schema_type, schema_str=body["schema"], references=new_schema_references
+            )
+        except (InvalidSchema, InvalidSchemaType) as e:
+            self.log.warning("Invalid schema: %r", body["schema"], exc_info=True)
+            if isinstance(e.__cause__, (SchemaParseException, ValueError)):
+                human_error = f"{e.__cause__.args[0]}"  # pylint: disable=no-member
+            else:
+                human_error = "Provided schema is not valid"
+            self.r(
+                body={
+                    "error_code": SchemaErrorCodes.INVALID_AVRO_SCHEMA.value,
+                    "message": f"Invalid {schema_type} schema. Error: {human_error}",
+                },
+                content_type=content_type,
+                status=HTTPStatus.UNPROCESSABLE_ENTITY,
+            )
 
         if subject not in self.ksr.subjects or not self.ksr.subjects.get(subject)["schemas"]:
             schema_id = self.ksr.get_schema_id(new_schema)

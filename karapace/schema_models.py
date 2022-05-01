@@ -12,8 +12,9 @@ from karapace.protobuf.exception import (
     SchemaParseException as ProtobufSchemaParseException,
 )
 from karapace.protobuf.schema import ProtobufSchema
+from karapace.typing import JsonData
 from karapace.utils import json_encode
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Optional, Union
 
 import json
 import ujson
@@ -80,7 +81,7 @@ class SchemaType(str, Enum):
 
 
 class TypedSchema:
-    def __init__(self, schema_type: SchemaType, schema_str: str):
+    def __init__(self, schema_type: SchemaType, schema_str: str, references: Optional["References"] = None):
         """Schema with type information
 
         Args:
@@ -89,6 +90,7 @@ class TypedSchema:
         """
         self.schema_type = schema_type
         self.schema_str = schema_str
+        self.references = references
 
     def to_dict(self) -> Dict[str, Any]:
         if self.schema_type is SchemaType.PROTOBUF:
@@ -105,17 +107,42 @@ class TypedSchema:
             return f"TypedSchema(type={self.schema_type}, schema={str(self)})"
         return f"TypedSchema(type={self.schema_type}, schema={json_encode(self.to_dict())})"
 
+    def get_references(self) -> Optional["References"]:
+        return self.references
+
     def __eq__(self, other: Any) -> bool:
-        return isinstance(other, TypedSchema) and self.__str__() == other.__str__() and self.schema_type is other.schema_type
+        a = isinstance(other, TypedSchema) and self.schema_type is other.schema_type and self.__str__() == other.__str__()
+
+        if not a:
+            return False
+        x = self.get_references()
+        y = other.get_references()
+        if x:
+            if y:
+                if x == y:
+                    return True
+            else:
+                return False
+        else:
+            if y:
+                return False
+
+        return True
 
 
 class ValidatedTypedSchema(TypedSchema):
-    def __init__(self, schema_type: SchemaType, schema_str: str, schema: Union[Draft7Validator, AvroSchema, ProtobufSchema]):
-        super().__init__(schema_type=schema_type, schema_str=schema_str)
+    def __init__(
+        self,
+        schema_type: SchemaType,
+        schema_str: str,
+        schema: Union[Draft7Validator, AvroSchema, ProtobufSchema],
+        references: Optional["References"] = None,
+    ):
+        super().__init__(schema_type=schema_type, schema_str=schema_str, references=references)
         self.schema = schema
 
     @staticmethod
-    def parse(schema_type: SchemaType, schema_str: str) -> "ValidatedTypedSchema":
+    def parse(schema_type: SchemaType, schema_str: str, references: Optional["References"] = None) -> "ValidatedTypedSchema":
         if schema_type not in [SchemaType.AVRO, SchemaType.JSONSCHEMA, SchemaType.PROTOBUF]:
             raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
 
@@ -151,7 +178,9 @@ class ValidatedTypedSchema(TypedSchema):
         else:
             raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
 
-        return ValidatedTypedSchema(schema_type=schema_type, schema_str=schema_str, schema=parsed_schema)
+        return ValidatedTypedSchema(
+            schema_type=schema_type, schema_str=schema_str, schema=parsed_schema, references=references
+        )
 
     def __str__(self) -> str:
         if self.schema_type == SchemaType.PROTOBUF:
@@ -160,7 +189,7 @@ class ValidatedTypedSchema(TypedSchema):
 
 
 class References:
-    def __init__(self, schema_type: SchemaType, references: List):
+    def __init__(self, schema_type: SchemaType, references: JsonData):
         """Schema with type information
 
         Args:
@@ -170,5 +199,11 @@ class References:
         self.schema_type = schema_type
         self.references = references
 
+    def val(self) -> JsonData:
+        return self.references
+
     def json(self) -> str:
-        return json_encode(self.references)
+        return str(json_encode(self.references, sort_keys=True))
+
+    def __eq__(self, other: Any) -> bool:
+        return self.json() == other.json()

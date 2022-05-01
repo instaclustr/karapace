@@ -8,7 +8,6 @@ from karapace.client import Client
 from karapace.protobuf.kotlin_wrapper import trim_margin
 from tests.utils import create_subject_name_factory
 
-import json
 import logging
 import pytest
 
@@ -151,5 +150,5 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
     myjson = res.json()
     assert "id" in myjson
     references = [{"name": "Customer.proto", "subject": "customer", "version": 1}]
-    refs2 = json.loads(myjson["references"])
+    refs2 = myjson["references"]
     assert not any(x != y for x, y in zip(refs2, references))

@@ -113,8 +113,9 @@ class SchemaRegistryClient:
                 references = References(schema_type, references_str)
             else:
                 references = None
-
-            return ValidatedTypedSchema.parse(schema_type, json_result["schema"]), references
+            if references:
+                return ValidatedTypedSchema.parse(schema_type, json_result["schema"]), references
+            return ValidatedTypedSchema.parse(schema_type, json_result["schema"])
 
         except InvalidSchema as e:
             raise SchemaRetrievalError(f"Failed to parse schema string from response: {json_result}") from e

@@ -348,10 +348,7 @@ class KafkaSchemaReader(Thread):
 
         subjects_schemas = self.subjects[schema_subject]["schemas"]
 
-        typed_schema = TypedSchema(
-            schema_type=schema_type_parsed,
-            schema_str=schema_str,
-        )
+        typed_schema = TypedSchema(schema_type=schema_type_parsed, schema_str=schema_str, references=schema_references)
         schema = {
             "schema": typed_schema,
             "version": schema_version,
@@ -359,7 +356,8 @@ class KafkaSchemaReader(Thread):
             "deleted": schema_deleted,
         }
         if schema_references:
-            subjects_schemas[schema_version]["references"] = schema_references
+            schema["references"] = schema_references
+
         if schema_version in subjects_schemas:
             LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
         else:
