@@ -157,10 +157,12 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
     myjson = res.json()
     referents = [2]
     assert not any(x != y for x, y in zip(myjson, referents))
+
+
 #    res = await registry_async_client.delete("subjects/customer/versions/latest")
 #    assert res.status_code == 200
 
 
-#TODO
-#AVRO references error
-#JSONSCHEMA references error
+# TODO
+# AVRO references error
+# JSONSCHEMA references error
