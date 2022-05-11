@@ -24,6 +24,7 @@ import time
 @unique
 class SchemaErrorCodes(Enum):
     EMPTY_SCHEMA = 42201
+    REFERENCE_EXISTS_ERROR_CODE = 42206
     HTTP_NOT_FOUND = HTTPStatus.NOT_FOUND.value
     HTTP_CONFLICT = HTTPStatus.CONFLICT.value
     HTTP_UNPROCESSABLE_ENTITY = HTTPStatus.UNPROCESSABLE_ENTITY.value
@@ -39,7 +40,9 @@ class SchemaErrorCodes(Enum):
     INVALID_COMPATIBILITY_LEVEL = 42203
     INVALID_AVRO_SCHEMA = 44201
     INVALID_PROTOBUF_SCHEMA = 44202
-    INVALID_REFERECES = 442203
+    INVALID_REFERECES = 44203
+    REFERENCES_SUPPORT_NOT_IMPLEMENTED = 44501
+    SCHEMAVERSION_HAS_REFERENCES = 44503
     NO_MASTER_ERROR = 50003
 
 
@@ -51,6 +54,7 @@ class SchemaErrorMessages(Enum):
         "forward, full, backward_transitive, forward_transitive, and "
         "full_transitive"
     )
+    REFERENCES_SUPPORT_NOT_IMPLEMENTED = "Schema references are not supported for '{schema_type}' schema type yet"
 
 
 class KarapaceSchemaRegistry(KarapaceBase):
@@ -613,6 +617,20 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 status=HTTPStatus.NOT_FOUND,
             )
 
+        referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), None)
+        if referenced_by and len(referenced_by) > 0:
+            self.r(
+                body={
+                    "error_code": SchemaErrorCodes.SCHEMAVERSION_HAS_REFERENCES.value,
+                    "message": (
+                        f"Subject '{subject}' Version {version} was not deleted "
+                        "because it is referenced by schemas with ids:[" + ", ".join(map(str, referenced_by)) + "]"
+                    ),
+                },
+                content_type=content_type,
+                status=HTTPStatus.NOT_FOUND,
+            )
+
         schema_id = subject_schema_data["id"]
         schema = subject_schema_data["schema"]
         self.send_schema_message(
@@ -660,7 +678,50 @@ class KarapaceSchemaRegistry(KarapaceBase):
         self.r(schema_data["schema"].schema_str, content_type)
 
     async def subject_version_referencedby_get(self, content_type, *, subject, version):
-        pass
+        self._validate_version(content_type, version)
+        subject_data = self._subject_get(subject, content_type)
+        schema_data = None
+        max_version = max(subject_data["schemas"])
+        if version == "latest":
+            version = max(subject_data["schemas"])
+            schema_data = subject_data["schemas"][version]
+        elif int(version) <= max_version:
+            schema_data = subject_data["schemas"].get(int(version))
+        else:
+            self.r(
+                body={
+                    "error_code": SchemaErrorCodes.VERSION_NOT_FOUND.value,
+                    "message": f"Version {version} not found.",
+                },
+                content_type=content_type,
+                status=HTTPStatus.NOT_FOUND,
+            )
+        if not schema_data:
+            self.r(
+                body={
+                    "error_code": SchemaErrorCodes.VERSION_NOT_FOUND.value,
+                    "message": f"Version {version} not found.",
+                },
+                content_type=content_type,
+                status=HTTPStatus.NOT_FOUND,
+            )
+
+        if schema_data["schema"].schema_type != SchemaType.PROTOBUF:
+            self.r(
+                body={
+                    "error_code": SchemaErrorCodes.REFERENCES_SUPPORT_NOT_IMPLEMENTED.value,
+                    "message": SchemaErrorMessages.REFERENCES_SUPPORT_NOT_IMPLEMENTED.value.format(
+                        schema_type=schema_data["schema"].schema_type
+                    ),
+                },
+                content_type=content_type,
+                status=HTTPStatus.UNPROCESSABLE_ENTITY,
+            )
+
+        referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), None)
+        if not referenced_by:
+            referenced_by = list()
+        self.r(list(referenced_by), content_type, status=HTTPStatus.OK)
 
     async def subject_versions_list(self, content_type, *, subject):
         subject_data = self._subject_get(subject, content_type)
@@ -805,9 +866,22 @@ class KarapaceSchemaRegistry(KarapaceBase):
         """Since we're the master we get to write the new schema"""
         self.log.info("Writing new schema locally since we're the master")
         new_schema_references = None
-        if body.get("references"):
+        references = body.get("references")
+        if references:
+            if schema_type != SchemaType.PROTOBUF:
+                self.r(
+                    body={
+                        "error_code": SchemaErrorCodes.REFERENCES_SUPPORT_NOT_IMPLEMENTED.value,
+                        "message": SchemaErrorMessages.REFERENCES_SUPPORT_NOT_IMPLEMENTED.value.format(
+                            schema_type=schema_type.value
+                        ),
+                    },
+                    content_type=content_type,
+                    status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+
             try:
-                new_schema_references = References(schema_type, body["references"])
+                new_schema_references = References(schema_type, references)
             except InvalidReferences:
                 human_error = "Provided references is not valid"
                 self.r(
@@ -969,7 +1043,3 @@ class KarapaceSchemaRegistry(KarapaceBase):
             content_type=content_type,
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
-
-    def get_referencedby(self, subject, version):
-
-        pass

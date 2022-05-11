@@ -15,7 +15,7 @@ from karapace.schema_models import SchemaType, TypedSchema
 from karapace.statsd import StatsClient
 from karapace.utils import KarapaceKafkaClient
 from threading import Event, Lock, Thread
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import logging
 import ujson
@@ -26,6 +26,7 @@ Version = int
 Schema = Dict[str, Any]
 # Container type for a subject, with configuration settings and all the schemas
 SubjectData = Dict[str, Any]
+Referents = List
 
 # The value `0` is a valid offset and it represents the first message produced
 # to a topic, therefore it can not be used.
@@ -139,6 +140,7 @@ class KafkaSchemaReader(Thread):
         self.config = config
         self.subjects: Dict[Subject, SubjectData] = {}
         self.schemas: Dict[int, TypedSchema] = {}
+        self.referenced_by: Dict[str, Referents] = {}
         self.global_schema_id = 0
         self.admin_client: Optional[KafkaAdminClient] = None
         self.topic_replication_factor = self.config["replication_factor"]
@@ -284,6 +286,7 @@ class KafkaSchemaReader(Thread):
             else:
                 LOG.info("Setting subject: %r config to: %r, value: %r", subject, value["compatibilityLevel"], value)
                 self.subjects[subject]["compatibility"] = value["compatibilityLevel"]
+
         elif value is not None:
             LOG.info("Setting global config to: %r, value: %r", value["compatibilityLevel"], value)
             self.config["compatibility"] = value["compatibilityLevel"]
@@ -326,8 +329,8 @@ class KafkaSchemaReader(Thread):
         schema_id = value["id"]
         schema_version = value["version"]
         schema_deleted = value.get("deleted", False)
-        schema_references = value.get("references", None)
 
+        schema_references = value.get("references", None)
         try:
             schema_type_parsed = SchemaType(schema_type)
         except ValueError:
@@ -364,6 +367,16 @@ class KafkaSchemaReader(Thread):
             LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
 
         subjects_schemas[schema_version] = schema
+        if schema_references:
+            for ref in schema_references:
+                ref_str = str(ref["subject"]) + "_" + str(ref["version"])
+                referents = self.referenced_by.get(ref_str, None)
+                if referents:
+                    LOG.info("Adding entry subject referenced_by : %r", ref_str)
+                    referents.append(schema_id)
+                else:
+                    LOG.info("Adding entry subject referenced_by : %r", ref_str)
+                    self.referenced_by[ref_str] = [schema_id]
 
         with self.id_lock:
             self.schemas[schema_id] = typed_schema
