@@ -510,12 +510,40 @@ class KarapaceSchemaRegistry(KarapaceBase):
 
         if permanent:
             for version, value in list(subject_data["schemas"].items()):
+                referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), None)
+                if referenced_by and len(referenced_by) > 0:
+                    self.r(
+                        body={
+                            "error_code": SchemaErrorCodes.SCHEMAVERSION_HAS_REFERENCES.value,
+                            "message": (
+                                f"Subject '{subject}' Version {version} cannot be not be deleted "
+                                "because it is referenced by schemas with ids:[" + ", ".join(map(str, referenced_by)) + "]"
+                            ),
+                        },
+                        content_type=content_type,
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+
+            for version, value in list(subject_data["schemas"].items()):
                 schema_id = value.get("id")
                 self.log.info("Permanently deleting subject '%s' version %s (schema id=%s)", subject, version, schema_id)
                 self.send_schema_message(
                     subject=subject, schema=None, schema_id=schema_id, version=version, deleted=True, references=None
                 )
         else:
+            referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(latest_schema_id), None)
+            if referenced_by and len(referenced_by) > 0:
+                self.r(
+                    body={
+                        "error_code": SchemaErrorCodes.SCHEMAVERSION_HAS_REFERENCES.value,
+                        "message": (
+                            f"Subject '{subject}' Version {latest_schema_id} cannot be not be deleted "
+                            "because it is referenced by schemas with ids:[" + ", ".join(map(str, referenced_by)) + "]"
+                        ),
+                    },
+                    content_type=content_type,
+                    status=HTTPStatus.NOT_FOUND,
+                )
             self.send_delete_subject_message(subject, latest_schema_id)
         self.r(version_list, content_type, status=HTTPStatus.OK)
 
@@ -569,9 +597,6 @@ class KarapaceSchemaRegistry(KarapaceBase):
             "id": schema_id,
             "schema": schema.schema_str,
         }
-        references = schema_data.get("references")
-        if references:
-            ret["references"] = references
         if schema.schema_type is not SchemaType.AVRO:
             ret["schemaType"] = schema.schema_type
         if return_dict:
@@ -802,8 +827,39 @@ class KarapaceSchemaRegistry(KarapaceBase):
             )
         schema_str = body["schema"]
         schema_type = self._validate_schema_type(content_type=content_type, data=body)
+
+        new_schema_references = None
+        references = body.get("references")
+        if references:
+            if schema_type != SchemaType.PROTOBUF:
+                self.r(
+                    body={
+                        "error_code": SchemaErrorCodes.REFERENCES_SUPPORT_NOT_IMPLEMENTED.value,
+                        "message": SchemaErrorMessages.REFERENCES_SUPPORT_NOT_IMPLEMENTED.value.format(
+                            schema_type=schema_type.value
+                        ),
+                    },
+                    content_type=content_type,
+                    status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+
+            try:
+                new_schema_references = References(schema_type, references)
+            except InvalidReferences:
+                human_error = "Provided references is not valid"
+                self.r(
+                    body={
+                        "error_code": SchemaErrorCodes.INVALID_REFERECES.value,
+                        "message": f"Invalid {schema_type} references. Error: {human_error}",
+                    },
+                    content_type=content_type,
+                    status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+
         try:
-            new_schema = ValidatedTypedSchema.parse(schema_type, schema_str)
+            new_schema = ValidatedTypedSchema.parse(
+                schema_type=schema_type, schema_str=schema_str, references=new_schema_references
+            )
         except InvalidSchema:
             self.log.exception("No proper parser found")
             self.r(
@@ -814,11 +870,13 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 content_type=content_type,
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+
         for schema in subject_data["schemas"].values():
             validated_typed_schema = ValidatedTypedSchema.parse(schema["schema"].schema_type, schema["schema"].schema_str)
             if (
                 validated_typed_schema.schema_type == new_schema.schema_type
                 and validated_typed_schema.schema == new_schema.schema
+                and schema.get("references", None) == new_schema_references
             ):
                 ret = {
                     "subject": subject,
