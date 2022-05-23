@@ -15,9 +15,9 @@ from urllib.parse import urljoin
 
 import asyncio
 import base64
+import json
 import logging
 import time
-import ujson
 import uuid
 
 KNOWN_FORMATS = {"json", "avro", "binary", "jsonschema", "protobuf"}
@@ -34,7 +34,15 @@ def new_name() -> str:
 class ConsumerManager:
     def __init__(self, config: dict) -> None:
         self.config = config
-        self.hostname = f"http://{self.config['advertised_hostname']}:{self.config['port']}"
+        if self.config["advertised_port"] is None:
+            self.hostname = (
+                f"{self.config['advertised_protocol']}://{self.config['advertised_hostname']}:{self.config['port']}"
+            )
+        else:
+            self.hostname = (
+                f"{self.config['advertised_protocol']}://"
+                f"{self.config['advertised_hostname']}:{self.config['advertised_port']}"
+            )
         self.deserializer = SchemaRegistryDeserializer(config=config)
         self.consumers = {}
         self.consumer_locks = defaultdict(Lock)
@@ -498,7 +506,7 @@ class ConsumerManager:
         if fmt in {"avro", "jsonschema", "protobuf"}:
             return await self.deserializer.deserialize(bytes_)
         if fmt == "json":
-            return ujson.loads(bytes_.decode("utf-8"))
+            return json.loads(bytes_.decode("utf-8"))
         return base64.b64encode(bytes_).decode("utf-8")
 
     def close(self):

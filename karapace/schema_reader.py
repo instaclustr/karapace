@@ -17,8 +17,8 @@ from karapace.utils import KarapaceKafkaClient
 from threading import Event, Lock, Thread
 from typing import Any, Dict, List, Optional
 
+import json
 import logging
-import ujson
 
 Offset = int
 Subject = str
@@ -169,6 +169,13 @@ class KafkaSchemaReader(Thread):
         # set by another thread (e.g. `KarapaceSchemaRegistry`)
         self._stop = Event()
 
+        # Content based deduplication of schemas. This is used to reduce memory
+        # usage when the same schema is produce multiple times to the same or
+        # different subjects. The deduplication is based on the schema content
+        # instead of the ids to handle corrupt data (where the ids are equal
+        # but the schema themselves don't match)
+        self._hash_to_schema: Dict[int, TypedSchema] = {}
+
     def get_schema_id(self, new_schema: TypedSchema) -> int:
         with self.id_lock:
             for schema_id, schema in self.schemas.items():
@@ -255,16 +262,16 @@ class KafkaSchemaReader(Thread):
         for _, msgs in raw_msgs.items():
             for msg in msgs:
                 try:
-                    key = ujson.loads(msg.key.decode("utf8"))
-                except ValueError:
+                    key = json.loads(msg.key.decode("utf8"))
+                except json.JSONDecodeError:
                     LOG.exception("Invalid JSON in msg.key")
                     continue
 
                 value = None
                 if msg.value:
                     try:
-                        value = ujson.loads(msg.value.decode("utf8"))
-                    except ValueError:
+                        value = json.loads(msg.value.decode("utf8"))
+                    except json.JSONDecodeError:
                         LOG.exception("Invalid JSON in msg.value")
                         continue
 
@@ -337,11 +344,16 @@ class KafkaSchemaReader(Thread):
             LOG.error("Invalid schema type: %s", schema_type)
             return
 
-        # Protobuf doesn't use JSON
+        # This does two jobs:
+        # - Validates the schema's JSON
+        # - Re-encode the schema to make sure small differences on formatting
+        # won't interfere with the equality. Note: This means it is possible
+        # for the REST API to return data that is formated differently from
+        # what is available in the topic.
         if schema_type_parsed in [SchemaType.AVRO, SchemaType.JSONSCHEMA]:
             try:
-                ujson.loads(schema_str)
-            except ValueError:
+                schema_str = json.dumps(json.loads(schema_str), sort_keys=True)
+            except json.JSONDecodeError:
                 LOG.error("Schema is not invalid JSON")
                 return
 
@@ -351,34 +363,48 @@ class KafkaSchemaReader(Thread):
 
         subjects_schemas = self.subjects[schema_subject]["schemas"]
 
-        typed_schema = TypedSchema(schema_type=schema_type_parsed, schema_str=schema_str, references=schema_references)
-        schema = {
-            "schema": typed_schema,
-            "version": schema_version,
-            "id": schema_id,
-            "deleted": schema_deleted,
-        }
-        if schema_references:
-            schema["references"] = schema_references
-
-        if schema_version in subjects_schemas:
-            LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
-        else:
-            LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
-
-        subjects_schemas[schema_version] = schema
-        if schema_references:
-            for ref in schema_references:
-                ref_str = str(ref["subject"]) + "_" + str(ref["version"])
-                referents = self.referenced_by.get(ref_str, None)
-                if referents:
-                    LOG.info("Adding entry subject referenced_by : %r", ref_str)
-                    referents.append(schema_id)
-                else:
-                    LOG.info("Adding entry subject referenced_by : %r", ref_str)
-                    self.referenced_by[ref_str] = [schema_id]
-
         with self.id_lock:
+            # dedup schemas to reduce memory pressure
+            schema_str = self._hash_to_schema.setdefault(hash(schema_str), schema_str)
+
+            typed_schema = TypedSchema(
+                schema_type=schema_type_parsed,
+                schema_str=schema_str,
+                references=schema_references
+            )
+            schema = {
+                "schema": typed_schema,
+                "version": schema_version,
+                "id": schema_id,
+                "deleted": schema_deleted,
+            }
+            if schema_references:
+                schema["references"] = schema_references
+
+            if schema_version in subjects_schemas:
+                LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+            else:
+                LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+
+            subjects_schemas[schema_version] = schema
+            if schema_references:
+                for ref in schema_references:
+                    ref_str = str(ref["subject"]) + "_" + str(ref["version"])
+                    referents = self.referenced_by.get(ref_str, None)
+                    if referents:
+                        LOG.info("Adding entry subject referenced_by : %r", ref_str)
+                        referents.append(schema_id)
+                    else:
+                        LOG.info("Adding entry subject referenced_by : %r", ref_str)
+                        self.referenced_by[ref_str] = [schema_id]
+
+            subjects_schemas[schema_version] = {
+                "schema": typed_schema,
+                "version": schema_version,
+                "id": schema_id,
+                "deleted": schema_deleted,
+            }
+
             self.schemas[schema_id] = typed_schema
             self.global_schema_id = max(self.global_schema_id, schema_id)
 

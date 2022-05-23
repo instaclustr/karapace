@@ -18,6 +18,7 @@ from typing import Any, Dict, NoReturn, Optional, Tuple
 import aiohttp
 import async_timeout
 import asyncio
+import json
 import time
 
 
@@ -956,7 +957,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
             )
         except (InvalidSchema, InvalidSchemaType) as e:
             self.log.warning("Invalid schema: %r", body["schema"], exc_info=True)
-            if isinstance(e.__cause__, (SchemaParseException, ValueError)):
+            if isinstance(e.__cause__, (SchemaParseException, json.JSONDecodeError)):
                 human_error = f"{e.__cause__.args[0]}"  # pylint: disable=no-member
             else:
                 human_error = "Provided schema is not valid"
