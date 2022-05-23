@@ -370,7 +370,7 @@ class KafkaSchemaReader(Thread):
             typed_schema = TypedSchema(
                 schema_type=schema_type_parsed,
                 schema_str=schema_str,
-                references=schema_references
+                references=schema_references,
             )
             schema = {
                 "schema": typed_schema,
