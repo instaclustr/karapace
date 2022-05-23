@@ -1235,7 +1235,7 @@ async def test_schema_subject_post_invalid(registry_async_client: Client) -> Non
     assert res.json()["error_code"] == 40401
     assert res.json()["message"] == f"Subject '{subject_3}' not found."
 
-    schema_str = ujson.dumps({"type": "string"})
+    schema_str = json.dumps({"type": "string"})
     # Create the subject
     subject_1 = subject_name_factory()
     res = await registry_async_client.post(
