@@ -859,7 +859,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
 
         try:
             new_schema = ValidatedTypedSchema.parse(
-                schema_type=schema_type, schema_str=schema_str, references=new_schema_references
+                schema_type=schema_type, schema_str=schema_str, references=new_schema_references, ksr=self.ksr
             )
         except InvalidSchema:
             self.log.exception("No proper parser found")
@@ -953,7 +953,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 )
         try:
             new_schema = ValidatedTypedSchema.parse(
-                schema_type=schema_type, schema_str=body["schema"], references=new_schema_references
+                schema_type=schema_type, schema_str=body["schema"], references=new_schema_references, ksr=self.ksr
             )
         except (InvalidSchema, InvalidSchemaType) as e:
             self.log.warning("Invalid schema: %r", body["schema"], exc_info=True)

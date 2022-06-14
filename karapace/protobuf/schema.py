@@ -6,10 +6,17 @@ from karapace.protobuf.enum_element import EnumElement
 from karapace.protobuf.exception import IllegalArgumentException
 from karapace.protobuf.location import Location
 from karapace.protobuf.message_element import MessageElement
+from karapace.protobuf.one_of_element import OneOfElement
 from karapace.protobuf.option_element import OptionElement
 from karapace.protobuf.proto_file_element import ProtoFileElement
 from karapace.protobuf.proto_parser import ProtoParser
+from karapace.protobuf.type_element import TypeElement
 from karapace.protobuf.utils import append_documentation, append_indented
+from karapace.schema_models import References
+from karapace.schema_reader import KafkaSchemaReader
+from typing import Dict, Optional
+
+import re
 
 
 def add_slashes(text: str) -> str:
@@ -97,15 +104,97 @@ def option_element_string(option: OptionElement) -> str:
     return f"option {result};\n"
 
 
+class Dependency:
+    def __init__(self, name: str, subject: str, version: int, schema: "ProtobufSchema") -> None:
+        self.name = name
+        self.subject = subject
+        self.version = version
+        self.schema = schema
+
+    def identifier(self) -> str:
+        return self.name + "_" + self.subject + "_" + str(self.version)
+
+
+class DependencyVerifierResult:
+    def __init__(self, result: bool, message: Optional[str] = ""):
+        self.result = result
+        self.message = message
+
+
+class DependencyVerifier:
+    def __init__(self):
+        self.declared_types = list()
+        self.used_types = list()
+
+    def add_declared_type(self, full_name: str):
+        self.declared_types.append(full_name)
+
+    def add_used_type(self, element_type: str):
+        self.used_types.append(element_type)
+
+    def verify(self) -> DependencyVerifierResult:
+        for used_type in self.used_types:
+            t = True
+            r = re.compile(re.escape(used_type) + "$")
+            for delcared_type in self.declared_types:
+                if r.match(delcared_type):
+                    t = True
+                    break
+            if not t:
+                return DependencyVerifierResult(False, f"type {used_type} is not defined")
+        return DependencyVerifierResult(True)
+
+
+def _process_one_of(verifier: DependencyVerifier, one_of: OneOfElement):
+    for field in one_of.fields:
+        verifier.add_used_type(field.element_type)
+
+
 class ProtobufSchema:
     DEFAULT_LOCATION = Location.get("")
 
-    def __init__(self, schema: str) -> None:
+    def __init__(
+        self, schema: str, references: Optional[References] = None, ksr: Optional[KafkaSchemaReader] = None
+    ) -> None:
         if type(schema).__name__ != "str":
             raise IllegalArgumentException("Non str type of schema string")
         self.dirty = schema
         self.cache_string = ""
+        self.ksr = ksr
         self.proto_file_element = ProtoParser.parse(self.DEFAULT_LOCATION, schema)
+        self.references = references
+        self.dependencies: Dict[str, Dependency] = dict()
+        self.reslove_dependencies()
+
+    def verify_schema_dependencies(self) -> DependencyVerifierResult:
+        verifier = DependencyVerifier()
+        self._verify_schema_dependencies(verifier)
+        return verifier.verify()
+
+    def _verify_schema_dependencies(self, verifier: DependencyVerifier) -> bool:
+        package_name = self.proto_file_element.package_name
+        for element_type in self.proto_file_element.types:
+            type_name = element_type.name
+            full_name = "." + package_name + type_name
+            verifier.add_declared_type(full_name)
+            if isinstance(element_type, MessageElement):
+                for one_of in element_type.one_ofs:
+                    _process_one_of(verifier, one_of)
+                for field in element_type.fields:
+                    verifier.add_used_type(field.element_type)
+
+            for nested_type in element_type.nested_types:
+                self._process_nested_type(verifier, full_name, nested_type)
+
+    def _process_nested_type(self, verifier: DependencyVerifier, full_name: str, element_type: TypeElement):
+        full_name = full_name + element_type.name
+        if isinstance(element_type, MessageElement):
+            for one_of in element_type.one_ofs:
+                _process_one_of(verifier, one_of)
+            for field in element_type.fields:
+                verifier.add_used_type(field.element_type)
+        for nested_type in element_type.nested_types:
+            self._process_nested_type(verifier, full_name, nested_type)
 
     def __str__(self) -> str:
         if not self.cache_string:
@@ -159,3 +248,20 @@ class ProtobufSchema:
 
     def compare(self, other: "ProtobufSchema", result: CompareResult) -> CompareResult:
         self.proto_file_element.compare(other.proto_file_element, result)
+
+    def reslove_dependencies(self):
+        try:
+            if self.references is not None:
+                for r in self.references.val():
+                    subject = r["subject"]
+                    version = r["version"]
+                    name = r["name"]
+                    subject_data = self.ksr.subjects.get(subject)
+                    schema_data = subject_data["schemas"][version]
+                    schema = schema_data["schema"].schema_str
+                    references = schema_data.get("references")
+                    parsed_schema = ProtobufSchema(schema, references)
+                    self.dependencies[name] = Dependency(name, subject, version, parsed_schema)
+        except Exception as e:
+            # TODO: need the exception?
+            raise e

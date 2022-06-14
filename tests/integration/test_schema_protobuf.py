@@ -107,7 +107,6 @@ async def test_protobuf_schema_compatibility(registry_async_client: Client, trai
 
 
 async def test_protobuf_schema_references(registry_async_client: Client) -> None:
-
     customer_schema = """
             |syntax = "proto3";
             |package a1;
@@ -128,12 +127,26 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
             |package a1;
             |import "Customer.proto";
             |message TestMessage {
+            |    enum Enum {
+            |       HIGH = 0;
+            |       MIDDLE = 1;
+            |       LOW = 2;
+            |    }
             |    message Value {
+            |        message Label{
+            |              int32 Id = 1;
+            |              str name = 2;
+            |        }
             |        Customer customer = 1;
             |        int32 x = 2;
             |    }
             |    string test = 1;
             |    .a1.TestMessage.Value val = 2;
+            |    oneof page_info {
+            |      option (my_option) = true;
+            |      int32 page_number = 3;
+            |      int32 result_per_page = 4;
+            |    }
             |}
             |"""
 

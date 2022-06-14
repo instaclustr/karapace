@@ -9,9 +9,11 @@ from karapace.protobuf.exception import (
     IllegalStateException,
     ProtobufException,
     ProtobufParserRuntimeException,
+    ProtobufUnresolvedDependencyException,
     SchemaParseException as ProtobufSchemaParseException,
 )
 from karapace.protobuf.schema import ProtobufSchema
+from karapace.schema_reader import KafkaSchemaReader
 from karapace.typing import JsonData
 from karapace.utils import json_encode
 from typing import Any, Dict, Optional, Union
@@ -49,15 +51,20 @@ def parse_jsonschema_definition(schema_definition: str) -> Draft7Validator:
     return Draft7Validator(schema)
 
 
-def parse_protobuf_schema_definition(schema_definition: str) -> ProtobufSchema:
+def parse_protobuf_schema_definition(
+    schema_definition: str, references: Optional["References"] = None, ksr: Optional[KafkaSchemaReader] = None
+) -> ProtobufSchema:
     """Parses and validates `schema_definition`.
 
     Raises:
         Nothing yet.
 
     """
-
-    return ProtobufSchema(schema_definition)
+    protobuf_schema = ProtobufSchema(schema_definition, references, ksr)
+    result = protobuf_schema.verify_schema_dependencies()
+    if not result.result:
+        raise ProtobufUnresolvedDependencyException(f"{result.message}")
+    return protobuf_schema
 
 
 class InvalidSchemaType(Exception):
@@ -141,7 +148,12 @@ class ValidatedTypedSchema(TypedSchema):
         self.schema = schema
 
     @staticmethod
-    def parse(schema_type: SchemaType, schema_str: str, references: Optional["References"] = None) -> "ValidatedTypedSchema":
+    def parse(
+        schema_type: SchemaType,
+        schema_str: str,
+        references: Optional["References"] = None,
+        ksr: Optional["KafkaSchemaReader"] = None,
+    ) -> "ValidatedTypedSchema":
         if schema_type not in [SchemaType.AVRO, SchemaType.JSONSCHEMA, SchemaType.PROTOBUF]:
             raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
 
@@ -161,7 +173,7 @@ class ValidatedTypedSchema(TypedSchema):
 
         elif schema_type is SchemaType.PROTOBUF:
             try:
-                parsed_schema = parse_protobuf_schema_definition(schema_str)
+                parsed_schema = parse_protobuf_schema_definition(schema_str, references, ksr)
             except (
                 TypeError,
                 SchemaError,
