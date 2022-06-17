@@ -12,11 +12,13 @@ from karapace.protobuf.proto_file_element import ProtoFileElement
 from karapace.protobuf.proto_parser import ProtoParser
 from karapace.protobuf.type_element import TypeElement
 from karapace.protobuf.utils import append_documentation, append_indented
-from karapace.schema_models import References
-from karapace.schema_reader import KafkaSchemaReader
-from typing import Dict, Optional
+from karapace.schema_references import References
+from typing import Dict, Optional, TYPE_CHECKING
 
 import re
+
+if TYPE_CHECKING:
+    from karapace.schema_reader import KafkaSchemaReader
 
 
 def add_slashes(text: str) -> str:
@@ -154,7 +156,7 @@ class ProtobufSchema:
     DEFAULT_LOCATION = Location.get("")
 
     def __init__(
-        self, schema: str, references: Optional[References] = None, ksr: Optional[KafkaSchemaReader] = None
+        self, schema: str, references: Optional[References] = None, ksr: Optional["KafkaSchemaReader"] = None
     ) -> None:
         if type(schema).__name__ != "str":
             raise IllegalArgumentException("Non str type of schema string")

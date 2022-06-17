@@ -1,6 +1,5 @@
 from avro.errors import SchemaParseException
 from avro.schema import parse as avro_parse, Schema as AvroSchema
-from enum import Enum, unique
 from jsonschema import Draft7Validator
 from jsonschema.exceptions import SchemaError
 from karapace.protobuf.exception import (
@@ -13,12 +12,15 @@ from karapace.protobuf.exception import (
     SchemaParseException as ProtobufSchemaParseException,
 )
 from karapace.protobuf.schema import ProtobufSchema
-from karapace.schema_reader import KafkaSchemaReader
-from karapace.typing import JsonData
+from karapace.schema_references import References
+from karapace.schema_type import SchemaType
 from karapace.utils import json_encode
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, TYPE_CHECKING, Union
 
 import json
+
+if TYPE_CHECKING:
+    from karapace.schema_reader import KafkaSchemaReader
 
 
 def parse_avro_schema_definition(s: str) -> AvroSchema:
@@ -52,7 +54,7 @@ def parse_jsonschema_definition(schema_definition: str) -> Draft7Validator:
 
 
 def parse_protobuf_schema_definition(
-    schema_definition: str, references: Optional["References"] = None, ksr: Optional[KafkaSchemaReader] = None
+    schema_definition: str, references: Optional[References] = None, ksr: Optional["KafkaSchemaReader"] = None
 ) -> ProtobufSchema:
     """Parses and validates `schema_definition`.
 
@@ -79,15 +81,8 @@ class InvalidReferences(Exception):
     pass
 
 
-@unique
-class SchemaType(str, Enum):
-    AVRO = "AVRO"
-    JSONSCHEMA = "JSON"
-    PROTOBUF = "PROTOBUF"
-
-
 class TypedSchema:
-    def __init__(self, schema_type: SchemaType, schema_str: str, references: Optional["References"] = None):
+    def __init__(self, schema_type: SchemaType, schema_str: str, references: Optional[References] = None):
         """Schema with type information
 
         Args:
@@ -197,24 +192,3 @@ class ValidatedTypedSchema(TypedSchema):
         if self.schema_type == SchemaType.PROTOBUF:
             return str(self.schema)
         return super().__str__()
-
-
-class References:
-    def __init__(self, schema_type: SchemaType, references: JsonData):
-        """Schema with type information
-
-        Args:
-            schema_type (SchemaType): The type of the schema
-            references (str): The original schema string
-        """
-        self.schema_type = schema_type
-        self.references = references
-
-    def val(self) -> JsonData:
-        return self.references
-
-    def json(self) -> str:
-        return str(json_encode(self.references, sort_keys=True))
-
-    def __eq__(self, other: Any) -> bool:
-        return self.json() == other.json()

@@ -11,7 +11,8 @@ from kafka.errors import KafkaConfigurationError, NoBrokersAvailable, NodeNotRea
 from karapace import constants
 from karapace.config import Config
 from karapace.master_coordinator import MasterCoordinator
-from karapace.schema_models import SchemaType, TypedSchema
+from karapace.schema_models import TypedSchema
+from karapace.schema_type import SchemaType
 from karapace.statsd import StatsClient
 from karapace.utils import KarapaceKafkaClient
 from threading import Event, Lock, Thread
