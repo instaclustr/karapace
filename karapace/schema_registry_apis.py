@@ -744,9 +744,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 status=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
 
-        referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), None)
-        if not referenced_by:
-            referenced_by = list()
+        referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), [])
         self.r(list(referenced_by), content_type, status=HTTPStatus.OK)
 
     async def subject_versions_list(self, content_type, *, subject):
