@@ -86,6 +86,7 @@ class TypedSchema:
         Args:
             schema_type (SchemaType): The type of the schema
             schema_str (str): The original schema string
+            references(References): The references which schema reference. 
         """
         self.schema_type = schema_type
         self.schema_str = schema_str
