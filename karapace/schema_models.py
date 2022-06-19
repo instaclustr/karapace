@@ -111,24 +111,14 @@ class TypedSchema:
         return self.references
 
     def __eq__(self, other: Any) -> bool:
-        a = isinstance(other, TypedSchema) and self.schema_type is other.schema_type and self.__str__() == other.__str__()
-
-        if not a:
+        schema_is_equal = isinstance(other, TypedSchema) and \
+            self.schema_type is other.schema_type and self.__str__() == other.__str__()
+        if not schema_is_equal:
             return False
-        x = self.get_references()
-        y = other.get_references()
-        if x:
-            if y:
-                if x == y:
-                    return True
-            else:
-                return False
+        if self.references is not None:
+            return self.references == other.references
         else:
-            if y:
-                return False
-
-        return True
-
+            return other.references is None
 
 class ValidatedTypedSchema(TypedSchema):
     def __init__(
@@ -206,4 +196,6 @@ class References:
         return str(json_encode(self.references, sort_keys=True))
 
     def __eq__(self, other: Any) -> bool:
+        if other is None or not isinstance(other, References):
+            return False
         return self.json() == other.json()
