@@ -86,7 +86,7 @@ class TypedSchema:
         Args:
             schema_type (SchemaType): The type of the schema
             schema_str (str): The original schema string
-            references(References): The references of schema 
+            references(References): The references of schema
         """
         self.schema_type = schema_type
         self.schema_str = schema_str
@@ -111,14 +111,15 @@ class TypedSchema:
         return self.references
 
     def __eq__(self, other: Any) -> bool:
-        schema_is_equal = isinstance(other, TypedSchema) and \
-            self.schema_type is other.schema_type and self.__str__() == other.__str__()
+        schema_is_equal = (
+            isinstance(other, TypedSchema) and self.schema_type is other.schema_type and self.__str__() == other.__str__()
+        )
         if not schema_is_equal:
             return False
         if self.references is not None:
             return self.references == other.references
-        else:
-            return other.references is None
+        return other.references is None
+
 
 class ValidatedTypedSchema(TypedSchema):
     def __init__(
