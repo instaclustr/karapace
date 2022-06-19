@@ -4,6 +4,8 @@ karapace - Kafka schema reader
 Copyright (c) 2019 Aiven Ltd
 See LICENSE for details
 """
+import json
+import logging
 from contextlib import closing, ExitStack
 from kafka import KafkaConsumer
 from kafka.admin import KafkaAdminClient, NewTopic
@@ -16,9 +18,6 @@ from karapace.statsd import StatsClient
 from karapace.utils import KarapaceKafkaClient
 from threading import Event, Lock, Thread
 from typing import Any, Dict, List, Optional
-
-import json
-import logging
 
 Offset = int
 Subject = str
