@@ -22,4 +22,6 @@ class References:
         return str(json_encode(self.references, sort_keys=True))
 
     def __eq__(self, other: Any) -> bool:
+        if other is None or not isinstance(other, References):
+            return False
         return self.json() == other.json()
