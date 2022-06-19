@@ -86,7 +86,7 @@ class TypedSchema:
         Args:
             schema_type (SchemaType): The type of the schema
             schema_str (str): The original schema string
-            references(References): The references which schema reference. 
+            references(References): The references of schema 
         """
         self.schema_type = schema_type
         self.schema_str = schema_str
@@ -184,7 +184,7 @@ class References:
 
         Args:
             schema_type (SchemaType): The type of the schema
-            references (str): The original schema string
+            references (str): The references of schema in Kafka/Json representation
         """
         self.schema_type = schema_type
         self.references = references
