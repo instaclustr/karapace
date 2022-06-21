@@ -12,7 +12,7 @@ from karapace.rapu import HTTPRequest, JSON_CONTENT_TYPE, SERVER_NAME
 from karapace.schema_models import InvalidReferences, InvalidSchema, InvalidSchemaType, References, ValidatedTypedSchema
 from karapace.schema_reader import KafkaSchemaReader, SchemaType, TypedSchema
 from karapace.typing import JsonData
-from karapace.utils import json_encode, KarapaceKafkaClient
+from karapace.utils import json_encode, KarapaceKafkaClient, reference_key
 from typing import Any, Dict, NoReturn, Optional, Tuple
 
 import aiohttp
@@ -511,7 +511,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
 
         if permanent:
             for version, value in list(subject_data["schemas"].items()):
-                referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), None)
+                referenced_by = self.ksr.referenced_by.get(reference_key(subject, version), None)
                 if referenced_by and len(referenced_by) > 0:
                     self.r(
                         body={
@@ -532,7 +532,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                     subject=subject, schema=None, schema_id=schema_id, version=version, deleted=True, references=None
                 )
         else:
-            referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(latest_schema_id), None)
+            referenced_by = self.ksr.referenced_by.get(reference_key(subject, latest_schema_id), None)
             if referenced_by and len(referenced_by) > 0:
                 self.r(
                     body={
@@ -643,7 +643,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 status=HTTPStatus.NOT_FOUND,
             )
 
-        referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), None)
+        referenced_by = self.ksr.referenced_by.get(reference_key(subject, version), None)
         if referenced_by and len(referenced_by) > 0:
             self.r(
                 body={
@@ -744,7 +744,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 status=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
 
-        referenced_by = self.ksr.referenced_by.get(str(subject) + "_" + str(version), [])
+        referenced_by = self.ksr.referenced_by.get(reference_key(subject, version), [])
         self.r(list(referenced_by), content_type, status=HTTPStatus.OK)
 
     async def subject_versions_list(self, content_type, *, subject):

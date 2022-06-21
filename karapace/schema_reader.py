@@ -13,7 +13,7 @@ from karapace.config import Config
 from karapace.master_coordinator import MasterCoordinator
 from karapace.schema_models import SchemaType, TypedSchema
 from karapace.statsd import StatsClient
-from karapace.utils import KarapaceKafkaClient
+from karapace.utils import KarapaceKafkaClient, reference_key
 from threading import Event, Lock, Thread
 from typing import Any, Dict, List, Optional
 
@@ -389,7 +389,8 @@ class KafkaSchemaReader(Thread):
             subjects_schemas[schema_version] = schema
             if schema_references:
                 for ref in schema_references:
-                    ref_str = str(ref["subject"]) + "_" + str(ref["version"])
+
+                    ref_str = reference_key(ref["subject"], ref["version"])
                     referents = self.referenced_by.get(ref_str, None)
                     if referents:
                         LOG.info("Adding entry subject referenced_by : %r", ref_str)
