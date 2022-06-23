@@ -925,7 +925,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 self.r(
                     body={
                         "error_code": SchemaErrorCodes.HTTP_UNPROCESSABLE_ENTITY.value,
-                        "message": f"Unrecognized field: {attr}",
+                        "message": f"Unrecognized field: {field}",
                     },
                     content_type=content_type,
                     status=HTTPStatus.UNPROCESSABLE_ENTITY,
