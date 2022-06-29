@@ -286,14 +286,12 @@ class KafkaSchemaReader(Thread):
             if subject not in self.subjects:
                 LOG.info("Adding first version of subject: %r with no schemas", subject)
                 self.subjects[subject] = {"schemas": {}}
-
             if not value:
                 LOG.info("Deleting compatibility config completely for subject: %r", subject)
                 self.subjects[subject].pop("compatibility", None)
             else:
                 LOG.info("Setting subject: %r config to: %r, value: %r", subject, value["compatibilityLevel"], value)
                 self.subjects[subject]["compatibility"] = value["compatibilityLevel"]
-
         elif value is not None:
             LOG.info("Setting global config to: %r, value: %r", value["compatibilityLevel"], value)
             self.config["compatibility"] = value["compatibilityLevel"]
