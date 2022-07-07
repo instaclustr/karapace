@@ -4,6 +4,7 @@
 from karapace.protobuf.compare_result import CompareResult
 from karapace.protobuf.enum_element import EnumElement
 from karapace.protobuf.exception import IllegalArgumentException
+from karapace.protobuf.known_dependency import DependenciesHardcoded, KnownDependency
 from karapace.protobuf.location import Location
 from karapace.protobuf.message_element import MessageElement
 from karapace.protobuf.one_of_element import OneOfElement
@@ -14,8 +15,6 @@ from karapace.protobuf.type_element import TypeElement
 from karapace.protobuf.utils import append_documentation, append_indented
 from karapace.schema_references import References
 from typing import Dict, Optional, TYPE_CHECKING
-
-import re
 
 if TYPE_CHECKING:
     from karapace.schema_reader import KafkaSchemaReader
@@ -127,6 +126,7 @@ class DependencyVerifier:
     def __init__(self):
         self.declared_types = list()
         self.used_types = list()
+        self.import_path = list()
 
     def add_declared_type(self, full_name: str):
         self.declared_types.append(full_name)
@@ -134,17 +134,32 @@ class DependencyVerifier:
     def add_used_type(self, element_type: str):
         self.used_types.append(element_type)
 
+    def add_import(self, import_name: str):
+        self.import_path.append(import_name)
+
     def verify(self) -> DependencyVerifierResult:
+        declared_index = set(self.declared_types)
         for used_type in self.used_types:
-            t = True
-            r = re.compile(re.escape(used_type) + "$")
-            for delcared_type in self.declared_types:
-                if r.match(delcared_type):
-                    t = True
-                    break
-            if not t:
+
+            # TODO: it must be improved !!!
+            if not (
+                used_type in DependenciesHardcoded.index
+                or KnownDependency.index_simple.get(used_type) is not None
+                or KnownDependency.index.get(used_type) is not None
+                or used_type in declared_index
+                or "." + used_type in declared_index
+            ):
                 return DependencyVerifierResult(False, f"type {used_type} is not defined")
+
+        # result: DependencyVerifierResult = self.verify_ciclyc_dependencies()
+        # if not result.result:
+        #    return result
         return DependencyVerifierResult(True)
+
+    # def verify_ciclyc_dependencies(self) -> DependencyVerifierResult:
+
+    # TODO: add recursion detection
+    #   return DependencyVerifierResult(True)
 
 
 def _process_one_of(verifier: DependencyVerifier, one_of: OneOfElement):
@@ -168,35 +183,51 @@ class ProtobufSchema:
         self.dependencies: Dict[str, Dependency] = dict()
         self.reslove_dependencies()
 
+    def gather_deps(self) -> DependencyVerifier:
+        verifier = DependencyVerifier()
+        self.collect_dependencies(verifier)
+        return verifier
+
     def verify_schema_dependencies(self) -> DependencyVerifierResult:
         verifier = DependencyVerifier()
-        self._verify_schema_dependencies(verifier)
+        self.collect_dependencies(verifier)
         return verifier.verify()
 
-    def _verify_schema_dependencies(self, verifier: DependencyVerifier) -> bool:
+    def collect_dependencies(self, verifier: DependencyVerifier):
+
+        for key in self.dependencies:
+            self.dependencies[key].schema.collect_dependencies(verifier)
+        # verifier.add_import?? we have no access to own Kafka structure from this class...
+        # but we need data to analyse imports to avoid ciclyc dependencies...
+
         package_name = self.proto_file_element.package_name
+        if package_name is None:
+            package_name = ""
         for element_type in self.proto_file_element.types:
             type_name = element_type.name
-            full_name = "." + package_name + type_name
+            full_name = "." + package_name + "." + type_name
             verifier.add_declared_type(full_name)
+            verifier.add_declared_type(type_name)
             if isinstance(element_type, MessageElement):
                 for one_of in element_type.one_ofs:
                     _process_one_of(verifier, one_of)
                 for field in element_type.fields:
                     verifier.add_used_type(field.element_type)
-
             for nested_type in element_type.nested_types:
-                self._process_nested_type(verifier, full_name, nested_type)
+                self._process_nested_type(verifier, package_name, type_name, nested_type)
 
-    def _process_nested_type(self, verifier: DependencyVerifier, full_name: str, element_type: TypeElement):
-        full_name = full_name + element_type.name
+    def _process_nested_type(self, verifier: DependencyVerifier, package_name: str, parent_name, element_type: TypeElement):
+
+        verifier.add_declared_type("." + package_name + "." + parent_name + "." + element_type.name)
+        verifier.add_declared_type(parent_name + "." + element_type.name)
+
         if isinstance(element_type, MessageElement):
             for one_of in element_type.one_ofs:
                 _process_one_of(verifier, one_of)
             for field in element_type.fields:
                 verifier.add_used_type(field.element_type)
         for nested_type in element_type.nested_types:
-            self._process_nested_type(verifier, full_name, nested_type)
+            self._process_nested_type(verifier, package_name, parent_name + "." + element_type.name, nested_type)
 
     def __str__(self) -> str:
         if not self.cache_string:
@@ -252,18 +283,19 @@ class ProtobufSchema:
         self.proto_file_element.compare(other.proto_file_element, result)
 
     def reslove_dependencies(self):
+        if self.references is None:
+            return
         try:
-            if self.references is not None:
-                for r in self.references.val():
-                    subject = r["subject"]
-                    version = r["version"]
-                    name = r["name"]
-                    subject_data = self.ksr.subjects.get(subject)
-                    schema_data = subject_data["schemas"][version]
-                    schema = schema_data["schema"].schema_str
-                    references = schema_data.get("references")
-                    parsed_schema = ProtobufSchema(schema, references)
-                    self.dependencies[name] = Dependency(name, subject, version, parsed_schema)
+            for r in self.references.val():
+                subject = r["subject"]
+                version = r["version"]
+                name = r["name"]
+                subject_data = self.ksr.subjects.get(subject)
+                schema_data = subject_data["schemas"][version]
+                schema = schema_data["schema"].schema_str
+                references = schema_data.get("references")
+                parsed_schema = ProtobufSchema(schema, references)
+                self.dependencies[name] = Dependency(name, subject, version, parsed_schema)
         except Exception as e:
             # TODO: need the exception?
             raise e

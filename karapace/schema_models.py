@@ -54,7 +54,7 @@ def parse_jsonschema_definition(schema_definition: str) -> Draft7Validator:
 
 
 def parse_protobuf_schema_definition(
-        schema_definition: str, references: Optional[References] = None, ksr: Optional["KafkaSchemaReader"] = None
+    schema_definition: str, references: Optional[References] = None, ksr: Optional["KafkaSchemaReader"] = None
 ) -> ProtobufSchema:
     """Parses and validates `schema_definition`.
 
@@ -112,33 +112,33 @@ class TypedSchema:
         return self.references
 
     def __eq__(self, other: Any) -> bool:
-        schema_is_equal = isinstance(other, TypedSchema) and \
-            self.schema_type is other.schema_type and self.__str__() == other.__str__()
+        schema_is_equal = (
+            isinstance(other, TypedSchema) and self.schema_type is other.schema_type and self.__str__() == other.__str__()
+        )
         if not schema_is_equal:
             return False
         if self.references is not None:
             return self.references == other.references
-        else:
-            return other.references is None
+        return other.references is None
 
 
 class ValidatedTypedSchema(TypedSchema):
     def __init__(
-            self,
-            schema_type: SchemaType,
-            schema_str: str,
-            schema: Union[Draft7Validator, AvroSchema, ProtobufSchema],
-            references: Optional["References"] = None,
+        self,
+        schema_type: SchemaType,
+        schema_str: str,
+        schema: Union[Draft7Validator, AvroSchema, ProtobufSchema],
+        references: Optional["References"] = None,
     ):
         super().__init__(schema_type=schema_type, schema_str=schema_str, references=references)
         self.schema = schema
 
     @staticmethod
     def parse(
-            schema_type: SchemaType,
-            schema_str: str,
-            references: Optional["References"] = None,
-            ksr: Optional["KafkaSchemaReader"] = None,
+        schema_type: SchemaType,
+        schema_str: str,
+        references: Optional["References"] = None,
+        ksr: Optional["KafkaSchemaReader"] = None,
     ) -> "ValidatedTypedSchema":
         if schema_type not in [SchemaType.AVRO, SchemaType.JSONSCHEMA, SchemaType.PROTOBUF]:
             raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
@@ -161,15 +161,15 @@ class ValidatedTypedSchema(TypedSchema):
             try:
                 parsed_schema = parse_protobuf_schema_definition(schema_str, references, ksr)
             except (
-                    TypeError,
-                    SchemaError,
-                    AssertionError,
-                    ProtobufParserRuntimeException,
-                    IllegalStateException,
-                    IllegalArgumentException,
-                    ProtobufError,
-                    ProtobufException,
-                    ProtobufSchemaParseException,
+                TypeError,
+                SchemaError,
+                AssertionError,
+                ProtobufParserRuntimeException,
+                IllegalStateException,
+                IllegalArgumentException,
+                ProtobufError,
+                ProtobufException,
+                ProtobufSchemaParseException,
             ) as e:
                 raise InvalidSchema from e
         else:
