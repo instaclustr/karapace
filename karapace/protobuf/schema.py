@@ -131,8 +131,18 @@ class DependencyVerifier:
     def add_declared_type(self, full_name: str):
         self.declared_types.append(full_name)
 
-    def add_used_type(self, element_type: str):
-        self.used_types.append(element_type)
+    def add_used_type(self, parent: str, element_type: str):
+        if element_type.find("map<") == 0:
+            end = element_type.find(">")
+            virgule = element_type.find(",")
+            key = element_type[4:virgule]
+            value = element_type[virgule + 1 : end]
+            value = value.strip()
+            self.used_types.append(parent + ";" + key)
+            self.used_types.append(parent + ";" + value)
+            # raise ProtobufUnresolvedDependencyException(f"Error in parsing string: {parent+'.'+element_type}")
+        else:
+            self.used_types.append(parent + ";" + element_type)
 
     def add_import(self, import_name: str):
         self.import_path.append(import_name)
@@ -140,6 +150,11 @@ class DependencyVerifier:
     def verify(self) -> DependencyVerifierResult:
         declared_index = set(self.declared_types)
         for used_type in self.used_types:
+            delimiter = used_type.rfind(";")
+            used_type_with_scope = ""
+            if delimiter != -1:
+                used_type_with_scope = used_type[:delimiter] + "." + used_type[delimiter + 1 :]
+                used_type = used_type[delimiter + 1 :]
 
             # TODO: it must be improved !!!
             if not (
@@ -147,6 +162,7 @@ class DependencyVerifier:
                 or KnownDependency.index_simple.get(used_type) is not None
                 or KnownDependency.index.get(used_type) is not None
                 or used_type in declared_index
+                or (delimiter != -1 and used_type_with_scope in declared_index)
                 or "." + used_type in declared_index
             ):
                 return DependencyVerifierResult(False, f"type {used_type} is not defined")
@@ -162,9 +178,10 @@ class DependencyVerifier:
     #   return DependencyVerifierResult(True)
 
 
-def _process_one_of(verifier: DependencyVerifier, one_of: OneOfElement):
+def _process_one_of(verifier: DependencyVerifier, package_name: str, parent_name: str, one_of: OneOfElement):
+    parent = package_name + "." + parent_name
     for field in one_of.fields:
-        verifier.add_used_type(field.element_type)
+        verifier.add_used_type(parent, field.element_type)
 
 
 class ProtobufSchema:
@@ -203,29 +220,31 @@ class ProtobufSchema:
         package_name = self.proto_file_element.package_name
         if package_name is None:
             package_name = ""
+        else:
+            package_name = "." + package_name
         for element_type in self.proto_file_element.types:
             type_name = element_type.name
-            full_name = "." + package_name + "." + type_name
+            full_name = package_name + "." + type_name
             verifier.add_declared_type(full_name)
             verifier.add_declared_type(type_name)
             if isinstance(element_type, MessageElement):
                 for one_of in element_type.one_ofs:
-                    _process_one_of(verifier, one_of)
+                    _process_one_of(verifier, package_name, type_name, one_of)
                 for field in element_type.fields:
-                    verifier.add_used_type(field.element_type)
+                    verifier.add_used_type(full_name, field.element_type)
             for nested_type in element_type.nested_types:
                 self._process_nested_type(verifier, package_name, type_name, nested_type)
 
     def _process_nested_type(self, verifier: DependencyVerifier, package_name: str, parent_name, element_type: TypeElement):
 
-        verifier.add_declared_type("." + package_name + "." + parent_name + "." + element_type.name)
+        verifier.add_declared_type(package_name + "." + parent_name + "." + element_type.name)
         verifier.add_declared_type(parent_name + "." + element_type.name)
 
         if isinstance(element_type, MessageElement):
             for one_of in element_type.one_ofs:
-                _process_one_of(verifier, one_of)
+                _process_one_of(verifier, package_name, parent_name, one_of)
             for field in element_type.fields:
-                verifier.add_used_type(field.element_type)
+                verifier.add_used_type(parent_name, field.element_type)
         for nested_type in element_type.nested_types:
             self._process_nested_type(verifier, package_name, parent_name + "." + element_type.name, nested_type)
 
