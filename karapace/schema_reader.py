@@ -27,6 +27,7 @@ Schema = Dict[str, Any]
 # Container type for a subject, with configuration settings and all the schemas
 SubjectData = Dict[str, Any]
 Referents = List
+SchemaId = int
 
 # The value `0` is a valid offset and it represents the first message produced
 # to a topic, therefore it can not be used.
@@ -175,6 +176,7 @@ class KafkaSchemaReader(Thread):
         # instead of the ids to handle corrupt data (where the ids are equal
         # but the schema themselves don't match)
         self._hash_to_schema: Dict[int, TypedSchema] = {}
+        self._hash_to_schema_id_on_subject: Dict[int, SchemaId] = {}
 
     def get_schema_id(self, new_schema: TypedSchema) -> int:
         with self.id_lock:
@@ -183,6 +185,15 @@ class KafkaSchemaReader(Thread):
                     return schema_id
             self.global_schema_id += 1
             return self.global_schema_id
+
+    def get_schema_id_if_exists(self, *, subject: Subject, schema: TypedSchema) -> Optional[SchemaId]:
+        return self._hash_to_schema_id_on_subject.get(hash((subject, schema.__str__())), None)
+
+    def _set_schema_id_on_subject(self, *, subject: Subject, schema: TypedSchema, schema_id: SchemaId) -> None:
+        self._hash_to_schema_id_on_subject.setdefault(hash((subject, schema.__str__())), schema_id)
+
+    def _delete_from_schema_id_on_subject(self, *, subject: Subject, schema: TypedSchema) -> None:
+        self._hash_to_schema_id_on_subject.pop(hash((subject, schema.__str__())), None)
 
     def close(self) -> None:
         LOG.info("Closing schema_reader")
@@ -306,10 +317,11 @@ class KafkaSchemaReader(Thread):
             LOG.error("Subject: %r did not exist, should have", subject)
         else:
             LOG.info("Deleting subject: %r, value: %r", subject, value)
-            updated_schemas = {
-                key: self._delete_schema_below_version(schema, value["version"])
-                for key, schema in self.subjects[subject]["schemas"].items()
-            }
+
+            updated_schemas: Dict[int, Schema] = {}
+            for schema_key, schema in self.subjects[subject]["schemas"].items():
+                updated_schemas[schema_key] = self._delete_schema_below_version(schema, value["version"])
+                self._delete_from_schema_id_on_subject(subject=subject, schema=schema["schema"])
             self.subjects[value["subject"]]["schemas"] = updated_schemas
 
     def _handle_msg_schema_hard_delete(self, key: dict) -> None:
@@ -334,8 +346,8 @@ class KafkaSchemaReader(Thread):
         schema_id = value["id"]
         schema_version = value["version"]
         schema_deleted = value.get("deleted", False)
-
         schema_references = value.get("references", None)
+
         try:
             schema_type_parsed = SchemaType(schema_type)
         except ValueError:
@@ -387,7 +399,6 @@ class KafkaSchemaReader(Thread):
             subjects_schemas[schema_version] = schema
             if schema_references:
                 for ref in schema_references:
-
                     ref_str = reference_key(ref["subject"], ref["version"])
                     referents = self.referenced_by.get(ref_str, None)
                     if referents:
@@ -397,15 +408,12 @@ class KafkaSchemaReader(Thread):
                         LOG.info("Adding entry subject referenced_by : %r", ref_str)
                         self.referenced_by[ref_str] = [schema_id]
 
-            subjects_schemas[schema_version] = {
-                "schema": typed_schema,
-                "version": schema_version,
-                "id": schema_id,
-                "deleted": schema_deleted,
-            }
-
             self.schemas[schema_id] = typed_schema
             self.global_schema_id = max(self.global_schema_id, schema_id)
+            if not schema_deleted:
+                self._set_schema_id_on_subject(subject=schema_subject, schema=typed_schema, schema_id=schema_id)
+            else:
+                self._delete_from_schema_id_on_subject(subject=schema_subject, schema=typed_schema)
 
     def handle_msg(self, key: dict, value: Optional[dict]) -> None:
         if key["keytype"] == "CONFIG":
@@ -429,6 +437,8 @@ class KafkaSchemaReader(Thread):
         *,
         include_deleted: bool = False,
     ) -> Dict:
+        if subject not in self.subjects:
+            return {}
         if include_deleted:
             return self.subjects[subject]["schemas"]
         non_deleted_schemas = {
