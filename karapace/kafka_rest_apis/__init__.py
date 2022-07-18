@@ -16,6 +16,7 @@ from karapace.serialization import InvalidMessageSchema, InvalidPayload, SchemaR
 from karapace.utils import convert_to_int, KarapaceKafkaClient
 from typing import List, Optional, Tuple
 
+import aiohttp.web
 import asyncio
 import base64
 import json
@@ -43,13 +44,20 @@ class KafkaRest(KarapaceBase):
         self._metadata_birth = None
         self.metadata_max_age = self.config["admin_metadata_max_age"]
         self.admin_client = None
-        self.admin_lock = asyncio.Lock()
+        self.admin_lock = None
         self.metadata_cache = None
         self.schemas_cache = {}
         self.consumer_manager = ConsumerManager(config=config)
         self.init_admin_client()
 
+        self._async_producer_lock = None
         self._async_producer: Optional[AIOKafkaProducer] = None
+
+        self.app.on_startup.append(self.initialize_asyncio_locks)
+
+    async def initialize_asyncio_locks(self, app: aiohttp.web.Application):  # pylint: disable=unused-argument
+        """The locks can be initialized when asyncio loop is available"""
+        self.admin_lock = asyncio.Lock()
         self._async_producer_lock = asyncio.Lock()
 
     def _add_kafka_rest_routes(self) -> None:
@@ -159,6 +167,9 @@ class KafkaRest(KarapaceBase):
         self.route("/topics/<topic:path>", callback=self.topic_publish, method="POST", rest_request=True)
 
     async def _maybe_create_async_producer(self) -> AIOKafkaProducer:
+        if self._async_producer is not None:
+            return self._async_producer
+
         if self.config["producer_acks"] == "all":
             acks = "all"
         else:
@@ -176,6 +187,9 @@ class KafkaRest(KarapaceBase):
                 producer = AIOKafkaProducer(
                     bootstrap_servers=self.config["bootstrap_uri"],
                     security_protocol=self.config["security_protocol"],
+                    sasl_mechanism=self.config["sasl_mechanism"],
+                    sasl_plain_username=self.config["sasl_plain_username"],
+                    sasl_plain_password=self.config["sasl_plain_password"],
                     ssl_context=ssl_context,
                     metadata_max_age_ms=self.config["metadata_max_age_ms"],
                     acks=acks,
@@ -192,7 +206,7 @@ class KafkaRest(KarapaceBase):
                 else:
                     self._async_producer = producer
 
-            return self._async_producer
+        return self._async_producer
 
     # CONSUMERS
     async def create_consumer(self, group_name: str, content_type: str, *, request: HTTPRequest):
@@ -386,8 +400,9 @@ class KafkaRest(KarapaceBase):
             "value_schema_id": data.get("value_schema_id"),
             "offsets": [],
         }
-        for key, value, partition in prepared_records:
-            publish_result = await self.produce_message(topic=topic, key=key, value=value, partition=partition)
+
+        publish_results = await self.produce_messages(topic=topic, prepared_records=prepared_records)
+        for publish_result in publish_results:
             if "error" in publish_result and status == HTTPStatus.OK:
                 status = HTTPStatus.INTERNAL_SERVER_ERROR
             response["offsets"].append(publish_result)
@@ -596,36 +611,72 @@ class KafkaRest(KarapaceBase):
                         sub_code=RESTErrorCodes.INVALID_DATA.value,
                     )
 
-    async def produce_message(self, *, topic: str, key: bytes, value: bytes, partition: int = None) -> dict:
-        try:
-            producer = await self._maybe_create_async_producer()
+    async def produce_messages(self, *, topic: str, prepared_records: List) -> List:
+        producer = await self._maybe_create_async_producer()
 
+        produce_futures = []
+        for key, value, partition in prepared_records:
             # Cancelling the returned future **will not** stop event from being sent, but cancelling
             # the ``send`` coroutine itself **will**.
             coroutine = producer.send(topic, key=key, value=value, partition=partition)
 
-            # Schedule the co-routine, it will be cancelled if the it is not complete in
+            # Schedule the co-routine, it will be cancelled if is not complete in
             # `self.kafka_timeout` seconds.
-            future = await asyncio.wait_for(fut=coroutine, timeout=self.kafka_timeout)
+            future = asyncio.wait_for(fut=coroutine, timeout=self.kafka_timeout)
+            produce_futures.append(future)
 
-            result = await future
-            return {
-                "offset": result.offset if result else -1,
-                "partition": result.topic_partition.partition if result else 0,
-            }
-        except AssertionError as e:
-            self.log.exception("Invalid data")
-            return {"error_code": 1, "error": str(e)}
-        except (KafkaTimeoutError, asyncio.TimeoutError):
-            self.log.exception("Timed out waiting for publisher")
-            # timeouts are retriable
-            return {"error_code": 1, "error": "timed out waiting to publish message"}
-        except BrokerResponseError as e:
-            self.log.exception(e)
-            resp = {"error_code": 1, "error": e.description}
-            if hasattr(e, "retriable") and e.retriable:
-                resp["error_code"] = 2
-            return resp
+        # Gather the results of `asyncio.wait_for`
+        send_results = []
+        for result in await asyncio.gather(*produce_futures, return_exceptions=True):
+            if not isinstance(result, Exception):
+                send_results.append(result)
+            else:
+                completed_exception_future = asyncio.Future()
+                completed_exception_future.set_exception(result)
+                send_results.append(completed_exception_future)
+
+        # Gather the results from Kafka producer `send`
+        produce_results = []
+        for result in await asyncio.gather(*send_results, return_exceptions=True):
+            if not isinstance(result, Exception):
+                produce_results.append(
+                    {
+                        "offset": result.offset if result else -1,
+                        "partition": result.topic_partition.partition if result else 0,
+                    }
+                )
+
+            # Exceptions below are raised before data is sent to Kafka
+            elif isinstance(result, asyncio.TimeoutError):
+                self.log.exception("Timed out waiting for publisher buffer")
+                # timeouts are retriable
+                produce_results.append(
+                    {"error_code": 1, "error": "timed out waiting to publish message, producer buffer full"}
+                )
+            elif isinstance(result, AssertionError):
+                self.log.exception("Invalid data")
+                produce_results.append({"error_code": 1, "error": str(result)})
+
+            # Exceptions below are raised after data is sent to Kafka
+            elif isinstance(result, KafkaTimeoutError):
+                self.log.exception("Timed out waiting for publisher")
+                # timeouts are retriable
+                produce_results.append({"error_code": 1, "error": "timed out waiting to publish message"})
+            elif isinstance(result, asyncio.CancelledError):
+                self.log.exception("Async task cancelled")
+                # cancel is retriable
+                produce_results.append({"error_code": 1, "error": "Publish message cancelled"})
+            elif isinstance(result, BrokerResponseError):
+                self.log.exception(result)
+                resp = {"error_code": 1, "error": result.description}
+                if hasattr(result, "retriable") and result.retriable:
+                    resp["error_code"] = 2
+                produce_results.append(resp)
+            else:
+                self.log.exception("Unexpected exception")
+                produce_results.append({"error_code": 1, "error": str(result)})
+
+        return produce_results
 
     async def list_topics(self, content_type: str):
         metadata = await self.cluster_metadata()

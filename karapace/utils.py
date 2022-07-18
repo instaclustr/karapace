@@ -56,6 +56,10 @@ def default_json_serialization(obj: MappingProxyType) -> dict:
     ...
 
 
+def reference_key(subject: str, version: int) -> str:
+    return hash((subject, version))
+
+
 def default_json_serialization(  # pylint: disable=inconsistent-return-statements
     obj: Union[datetime, timedelta, Decimal, MappingProxyType],
 ) -> Union[str, float, dict]:

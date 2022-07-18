@@ -88,6 +88,7 @@ class TypedSchema:
         Args:
             schema_type (SchemaType): The type of the schema
             schema_str (str): The original schema string
+            references(References): The references of schema
         """
         self.schema_type = schema_type
         self.schema_str = schema_str
@@ -183,3 +184,25 @@ class ValidatedTypedSchema(TypedSchema):
         if self.schema_type == SchemaType.PROTOBUF:
             return str(self.schema)
         return super().__str__()
+
+class References:
+    def __init__(self, schema_type: SchemaType, references: JsonData):
+        """Schema with type information
+
+        Args:
+            schema_type (SchemaType): The type of the schema
+            references (str): The references of schema in Kafka/Json representation
+        """
+        self.schema_type = schema_type
+        self.references = references
+
+    def val(self) -> JsonData:
+        return self.references
+
+    def json(self) -> str:
+        return str(json_encode(self.references, sort_keys=True))
+
+    def __eq__(self, other: Any) -> bool:
+        if other is None or not isinstance(other, References):
+            return False
+        return self.json() == other.json()

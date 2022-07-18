@@ -1,3 +1,4 @@
+from aiohttp import BasicAuth
 from avro.io import BinaryDecoder, BinaryEncoder, DatumReader, DatumWriter
 from google.protobuf.message import DecodeError
 from jsonschema import ValidationError
@@ -65,8 +66,13 @@ NAME_STRATEGIES = {
 
 
 class SchemaRegistryClient:
-    def __init__(self, schema_registry_url: str = "http://localhost:8081", server_ca: Optional[str] = None):
-        self.client = Client(server_uri=schema_registry_url, server_ca=server_ca)
+    def __init__(
+        self,
+        schema_registry_url: str = "http://localhost:8081",
+        server_ca: Optional[str] = None,
+        session_auth: Optional[BasicAuth] = None,
+    ):
+        self.client = Client(server_uri=schema_registry_url, server_ca=server_ca, session_auth=session_auth)
         self.base_url = schema_registry_url
 
     async def post_new_schema(
@@ -133,12 +139,17 @@ class SchemaRegistrySerializerDeserializer:
     ) -> None:
         self.config = config
         self.state_lock = asyncio.Lock()
+        session_auth: Optional[BasicAuth] = None
+        if self.config.get("registry_user") and self.config.get("registry_password"):
+            session_auth = BasicAuth(self.config.get("registry_user"), self.config.get("registry_password"), encoding="utf8")
         if self.config.get("registry_ca"):
             registry_url = f"https://{self.config['registry_host']}:{self.config['registry_port']}"
-            registry_client = SchemaRegistryClient(registry_url, server_ca=self.config["registry_ca"])
+            registry_client = SchemaRegistryClient(
+                registry_url, server_ca=self.config["registry_ca"], session_auth=session_auth
+            )
         else:
             registry_url = f"http://{self.config['registry_host']}:{self.config['registry_port']}"
-            registry_client = SchemaRegistryClient(registry_url)
+            registry_client = SchemaRegistryClient(registry_url, session_auth=session_auth)
         self.subject_name_strategy = NAME_STRATEGIES[name_strategy]
         self.registry_client: Optional[SchemaRegistryClient] = registry_client
         self.ids_to_schemas: Dict[int, TypedSchema] = {}
@@ -163,7 +174,7 @@ class SchemaRegistrySerializerDeserializer:
 
     async def get_schema_for_subject(self, subject: str) -> TypedSchema:
         assert self.registry_client, "must not call this method after the object is closed."
-        # pylint: disable=unused-variable
+
         schema_id, schema = await self.registry_client.get_latest_schema(subject)
         async with self.state_lock:
             schema_ser = schema.__str__()
@@ -180,7 +191,7 @@ class SchemaRegistrySerializerDeserializer:
         schema_ser = schema_typed.__str__()
         if schema_ser in self.schemas_to_ids:
             return self.schemas_to_ids[schema_ser]
-        schema_id = await self.registry_client.post_new_schema(subject, schema_typed)  # pylint: disable=E1120
+        schema_id = await self.registry_client.post_new_schema(subject, schema_typed)
 
         async with self.state_lock:
             self.schemas_to_ids[schema_ser] = schema_id
