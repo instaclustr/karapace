@@ -13,9 +13,9 @@ from karapace.config import Config
 from karapace.master_coordinator import MasterCoordinator
 from karapace.schema_models import SchemaType, TypedSchema
 from karapace.statsd import StatsClient
-from karapace.utils import KarapaceKafkaClient
+from karapace.utils import KarapaceKafkaClient, reference_key
 from threading import Event, Lock, Thread
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import json
 import logging
@@ -26,6 +26,7 @@ Version = int
 Schema = Dict[str, Any]
 # Container type for a subject, with configuration settings and all the schemas
 SubjectData = Dict[str, Any]
+Referents = List
 SchemaId = int
 
 # The value `0` is a valid offset and it represents the first message produced
@@ -140,6 +141,7 @@ class KafkaSchemaReader(Thread):
         self.config = config
         self.subjects: Dict[Subject, SubjectData] = {}
         self.schemas: Dict[int, TypedSchema] = {}
+        self.referenced_by: Dict[str, Referents] = {}
         self.global_schema_id = 0
         self.admin_client: Optional[KafkaAdminClient] = None
         self.topic_replication_factor = self.config["replication_factor"]
@@ -295,7 +297,6 @@ class KafkaSchemaReader(Thread):
             if subject not in self.subjects:
                 LOG.info("Adding first version of subject: %r with no schemas", subject)
                 self.subjects[subject] = {"schemas": {}}
-
             if not value:
                 LOG.info("Deleting compatibility config completely for subject: %r", subject)
                 self.subjects[subject].pop("compatibility", None)
@@ -345,6 +346,7 @@ class KafkaSchemaReader(Thread):
         schema_id = value["id"]
         schema_version = value["version"]
         schema_deleted = value.get("deleted", False)
+        schema_references = value.get("references", None)
 
         try:
             schema_type_parsed = SchemaType(schema_type)
@@ -375,21 +377,36 @@ class KafkaSchemaReader(Thread):
             # dedup schemas to reduce memory pressure
             schema_str = self._hash_to_schema.setdefault(hash(schema_str), schema_str)
 
-            if schema_version in subjects_schemas:
-                LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
-            else:
-                LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
-
             typed_schema = TypedSchema(
                 schema_type=schema_type_parsed,
                 schema_str=schema_str,
+                references=schema_references,
             )
-            subjects_schemas[schema_version] = {
+            schema = {
                 "schema": typed_schema,
                 "version": schema_version,
                 "id": schema_id,
                 "deleted": schema_deleted,
             }
+            if schema_references:
+                schema["references"] = schema_references
+
+            if schema_version in subjects_schemas:
+                LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+            else:
+                LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+
+            subjects_schemas[schema_version] = schema
+            if schema_references:
+                for ref in schema_references:
+                    ref_str = reference_key(ref["subject"], ref["version"])
+                    referents = self.referenced_by.get(ref_str, None)
+                    if referents:
+                        LOG.info("Adding entry subject referenced_by : %r", ref_str)
+                        referents.append(schema_id)
+                    else:
+                        LOG.info("Adding entry subject referenced_by : %r", ref_str)
+                        self.referenced_by[ref_str] = [schema_id]
 
             self.schemas[schema_id] = typed_schema
             self.global_schema_id = max(self.global_schema_id, schema_id)
