@@ -445,3 +445,9 @@ class KafkaSchemaReader(Thread):
             key: val for key, val in self.subjects[subject]["schemas"].items() if val.get("deleted", False) is False
         }
         return non_deleted_schemas
+
+    def remove_referenced_by(self, schema_id: SchemaId, references: List):
+        for ref in references:
+            key = reference_key(ref["subject"], ref["version"])
+            if self.referenced_by.get(key, None) and schema_id in self.referenced_by[key]:
+                self.referenced_by[key].remove(schema_id)

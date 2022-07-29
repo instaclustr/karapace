@@ -188,6 +188,15 @@ class References:
             references (str): The references of schema in Kafka/Json representation
         """
         self.schema_type = schema_type
+        if self.schema_type != "PROTOBUF" or not isinstance(references, list):
+            raise InvalidReferences
+
+        for ref in references:
+            if not isinstance(ref, dict):
+                raise InvalidReferences
+            if ref.get("name") is None or ref.get("subject") is None or ref.get("version") is None:
+                raise InvalidReferences
+
         self.references = references
 
     def val(self) -> JsonData:

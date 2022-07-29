@@ -155,4 +155,10 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
     assert res.status_code == 404
     match_msg = "Subject 'customer' Version 1 was not deleted because it is referenced by schemas with ids:[2]"
     myjson = res.json()
-    assert myjson["error_code"] == 44503 and myjson["message"] == match_msg
+    assert myjson["error_code"] == 42206 and myjson["message"] == match_msg
+
+    res = await registry_async_client.delete("subjects/test_schema/versions/1")
+    assert res.status_code == 200
+
+    res = await registry_async_client.delete("subjects/customer/versions/1")
+    assert res.status_code == 200
