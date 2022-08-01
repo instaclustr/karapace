@@ -1254,8 +1254,8 @@ async def test_schema_subject_post_invalid(registry_async_client: Client) -> Non
         json={"schema": schema_str, "references": [{"name": "Customer.avro", "subject": "customer", "version": 1}]},
     )
     assert res.status_code == 422
-    assert res.json()["error_code"] == 44501
-    assert res.json()["message"] == "Schema references are not supported for 'AVRO' schema type yet"
+    assert res.json()["error_code"] == 44302
+    assert res.json()["message"] == "Schema references are not supported for 'AVRO' schema type"
 
 
 @pytest.mark.parametrize("trail", ["", "/"])

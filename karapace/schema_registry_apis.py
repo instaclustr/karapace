@@ -30,7 +30,6 @@ log = logging.getLogger(__name__)
 @unique
 class SchemaErrorCodes(Enum):
     EMPTY_SCHEMA = 42201
-    REFERENCE_EXISTS_ERROR_CODE = 42206
     HTTP_NOT_FOUND = HTTPStatus.NOT_FOUND.value
     HTTP_CONFLICT = HTTPStatus.CONFLICT.value
     HTTP_UNPROCESSABLE_ENTITY = HTTPStatus.UNPROCESSABLE_ENTITY.value
@@ -45,10 +44,9 @@ class SchemaErrorCodes(Enum):
     INVALID_VERSION_ID = 42202
     INVALID_COMPATIBILITY_LEVEL = 42203
     INVALID_AVRO_SCHEMA = 44201
-    INVALID_PROTOBUF_SCHEMA = 44202
-    INVALID_REFERECES = 44203
-    REFERENCES_SUPPORT_NOT_IMPLEMENTED = 44501
-    SCHEMAVERSION_HAS_REFERENCES = 44503
+    INVALID_REFERENCES = 44301
+    REFERENCES_SUPPORT_NOT_IMPLEMENTED = 44302
+    REFERENCE_EXISTS = 42206
     NO_MASTER_ERROR = 50003
 
 
@@ -60,7 +58,7 @@ class SchemaErrorMessages(Enum):
         "forward, full, backward_transitive, forward_transitive, and "
         "full_transitive"
     )
-    REFERENCES_SUPPORT_NOT_IMPLEMENTED = "Schema references are not supported for '{schema_type}' schema type yet"
+    REFERENCES_SUPPORT_NOT_IMPLEMENTED = "Schema references are not supported for '{schema_type}' schema type"
 
 
 class KarapaceSchemaRegistry(KarapaceBase):
@@ -643,7 +641,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 if referenced_by and len(referenced_by) > 0:
                     self.r(
                         body={
-                            "error_code": SchemaErrorCodes.SCHEMAVERSION_HAS_REFERENCES.value,
+                            "error_code": SchemaErrorCodes.REFERENCE_EXISTS.value,
                             "message": (
                                 f"Subject '{subject}' Version {version} cannot be not be deleted "
                                 "because it is referenced by schemas with ids:[" + ", ".join(map(str, referenced_by)) + "]"
@@ -655,16 +653,20 @@ class KarapaceSchemaRegistry(KarapaceBase):
 
             for version, value in list(subject_data["schemas"].items()):
                 schema_id = value.get("id")
+                references = value.get("references", None)
                 self.log.info("Permanently deleting subject '%s' version %s (schema id=%s)", subject, version, schema_id)
                 self.send_schema_message(
                     subject=subject, schema=None, schema_id=schema_id, version=version, deleted=True, references=None
                 )
+                if references and len(references) > 0:
+                    self.ksr.remove_referenced_by(schema_id, references)
+
         else:
             referenced_by = self.ksr.referenced_by.get(reference_key(subject, latest_schema_id), None)
             if referenced_by and len(referenced_by) > 0:
                 self.r(
                     body={
-                        "error_code": SchemaErrorCodes.SCHEMAVERSION_HAS_REFERENCES.value,
+                        "error_code": SchemaErrorCodes.REFERENCE_EXISTS.value,
                         "message": (
                             f"Subject '{subject}' Version {latest_schema_id} cannot be not be deleted "
                             "because it is referenced by schemas with ids:[" + ", ".join(map(str, referenced_by)) + "]"
@@ -785,7 +787,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
         if referenced_by and len(referenced_by) > 0:
             self.r(
                 body={
-                    "error_code": SchemaErrorCodes.SCHEMAVERSION_HAS_REFERENCES.value,
+                    "error_code": SchemaErrorCodes.REFERENCE_EXISTS.value,
                     "message": (
                         f"Subject '{subject}' Version {version} was not deleted "
                         "because it is referenced by schemas with ids:[" + ", ".join(map(str, referenced_by)) + "]"
@@ -797,6 +799,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
 
         schema_id = subject_schema_data["id"]
         schema = subject_schema_data["schema"]
+        references = schema.references
         self.send_schema_message(
             subject=subject,
             schema=None if permanent else schema,
@@ -805,6 +808,8 @@ class KarapaceSchemaRegistry(KarapaceBase):
             deleted=True,
             references=None,
         )
+        if references and len(references) > 0:
+            self.ksr.remove_referenced_by(schema_id, references)
         self.r(str(version), content_type, status=HTTPStatus.OK)
 
     async def subject_version_delete(
@@ -999,7 +1004,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 human_error = "Provided references is not valid"
                 self.r(
                     body={
-                        "error_code": SchemaErrorCodes.INVALID_REFERECES.value,
+                        "error_code": SchemaErrorCodes.INVALID_REFERENCES.value,
                         "message": f"Invalid {schema_type} references. Error: {human_error}",
                     },
                     content_type=content_type,
@@ -1079,7 +1084,7 @@ class KarapaceSchemaRegistry(KarapaceBase):
                 human_error = "Provided references is not valid"
                 self.r(
                     body={
-                        "error_code": SchemaErrorCodes.INVALID_REFERECES.value,
+                        "error_code": SchemaErrorCodes.INVALID_REFERENCES.value,
                         "message": f"Invalid {schema_type} references. Error: {human_error}",
                     },
                     content_type=content_type,
