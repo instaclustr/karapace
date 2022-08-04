@@ -188,13 +188,13 @@ class ProtobufSchema:
     DEFAULT_LOCATION = Location.get("")
 
     def __init__(
-        self, schema: str, references: Optional[References] = None, ksr: Optional["KafkaSchemaReader"] = None
+        self, schema: str, references: Optional[References] = None, schema_reader: Optional["KafkaSchemaReader"] = None
     ) -> None:
         if type(schema).__name__ != "str":
             raise IllegalArgumentException("Non str type of schema string")
         self.dirty = schema
         self.cache_string = ""
-        self.ksr = ksr
+        self.schema_reader = schema_reader
         self.proto_file_element = ProtoParser.parse(self.DEFAULT_LOCATION, schema)
         self.references = references
         self.dependencies: Dict[str, Dependency] = dict()
@@ -309,7 +309,7 @@ class ProtobufSchema:
                 subject = r["subject"]
                 version = r["version"]
                 name = r["name"]
-                subject_data = self.ksr.subjects.get(subject)
+                subject_data = self.schema_reader.subjects.get(subject)
                 schema_data = subject_data["schemas"][version]
                 schema = schema_data["schema"].schema_str
                 references = schema_data.get("references")
