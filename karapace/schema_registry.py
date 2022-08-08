@@ -205,6 +205,7 @@ class KarapaceSchemaRegistry:
 
             schema_id = subject_schema_data["id"]
             schema = subject_schema_data["schema"]
+            references = subject_schema_data.get("references", None)
             self.send_schema_message(
                 subject=subject,
                 schema=None if permanent else schema,
@@ -213,6 +214,8 @@ class KarapaceSchemaRegistry:
                 deleted=True,
                 references=None,
             )
+            if references and len(references) > 0:
+                self.schema_reader.remove_referenced_by(schema_id, references)
             return resolved_version
 
     def subject_get(self, subject: Subject, include_deleted: bool = False) -> SubjectData:
