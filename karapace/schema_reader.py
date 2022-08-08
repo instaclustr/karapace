@@ -14,7 +14,6 @@ from karapace.master_coordinator import MasterCoordinator
 from karapace.schema_models import TypedSchema
 from karapace.schema_type import SchemaType
 from karapace.statsd import StatsClient
-
 from karapace.utils import KarapaceKafkaClient, reference_key
 from threading import Condition, Event, Lock, Thread
 from typing import Any, Dict, List, Optional
