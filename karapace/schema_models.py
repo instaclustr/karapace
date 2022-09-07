@@ -12,16 +12,13 @@ from karapace.protobuf.exception import (
     ProtobufUnresolvedDependencyException,
     SchemaParseException as ProtobufSchemaParseException,
 )
-from karapace.protobuf.schema import ProtobufSchema
+from karapace.protobuf.schema import Dependency, ProtobufSchema
 from karapace.schema_references import References
 from karapace.schema_type import SchemaType
 from karapace.utils import json_encode
-from typing import Any, Dict, Optional, TYPE_CHECKING, Union
+from typing import Any, Dict, Optional, Union
 
 import json
-
-if TYPE_CHECKING:
-    from karapace.schema_reader import KafkaSchemaReader
 
 
 def parse_avro_schema_definition(s: str) -> AvroSchema:
@@ -55,7 +52,7 @@ def parse_jsonschema_definition(schema_definition: str) -> Draft7Validator:
 
 
 def parse_protobuf_schema_definition(
-    schema_definition: str, references: Optional[References] = None, schema_reader: Optional["KafkaSchemaReader"] = None
+    schema_definition: str, references: Optional[References] = None, dependencies: Optional[Dict[str, Dependency]] = None
 ) -> ProtobufSchema:
     """Parses and validates `schema_definition`.
 
@@ -63,7 +60,7 @@ def parse_protobuf_schema_definition(
         Nothing yet.
 
     """
-    protobuf_schema = ProtobufSchema(schema_definition, references, schema_reader)
+    protobuf_schema = ProtobufSchema(schema_definition, references, dependencies)
     result = protobuf_schema.verify_schema_dependencies()
     if not result.result:
         raise ProtobufUnresolvedDependencyException(f"{result.message}")
@@ -71,7 +68,13 @@ def parse_protobuf_schema_definition(
 
 
 class TypedSchema:
-    def __init__(self, schema_type: SchemaType, schema_str: str, references: Optional[References] = None):
+    def __init__(
+        self,
+        schema_type: SchemaType,
+        schema_str: str,
+        references: Optional[References] = None,
+        dependencies: Optional[Dict[str, Dependency]] = None,
+    ):
         """Schema with type information
 
         Args:
@@ -82,6 +85,7 @@ class TypedSchema:
         self.schema_type = schema_type
         self.schema_str = schema_str
         self.references = references
+        self.dependencies = dependencies
 
     def to_dict(self) -> Dict[str, Any]:
         if self.schema_type is SchemaType.PROTOBUF:
@@ -119,8 +123,9 @@ class ValidatedTypedSchema(TypedSchema):
         schema_str: str,
         schema: Union[Draft7Validator, AvroSchema, ProtobufSchema],
         references: Optional["References"] = None,
+        dependencies: Optional[Dict[str, Dependency]] = None,
     ):
-        super().__init__(schema_type=schema_type, schema_str=schema_str, references=references)
+        super().__init__(schema_type=schema_type, schema_str=schema_str, references=references, dependencies=dependencies)
         self.schema = schema
 
     @staticmethod
@@ -128,7 +133,7 @@ class ValidatedTypedSchema(TypedSchema):
         schema_type: SchemaType,
         schema_str: str,
         references: Optional["References"] = None,
-        schema_reader: Optional["KafkaSchemaReader"] = None,
+        dependencies: Optional[Dict[str, Dependency]] = None,
     ) -> "ValidatedTypedSchema":
         if schema_type not in [SchemaType.AVRO, SchemaType.JSONSCHEMA, SchemaType.PROTOBUF]:
             raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
@@ -149,7 +154,7 @@ class ValidatedTypedSchema(TypedSchema):
 
         elif schema_type is SchemaType.PROTOBUF:
             try:
-                parsed_schema = parse_protobuf_schema_definition(schema_str, references, schema_reader)
+                parsed_schema = parse_protobuf_schema_definition(schema_str, references, dependencies)
             except (
                 TypeError,
                 SchemaError,

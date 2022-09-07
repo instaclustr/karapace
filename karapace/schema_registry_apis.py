@@ -21,6 +21,7 @@ from karapace.errors import (
     VersionNotFoundException,
 )
 from karapace.karapace import KarapaceBase
+from karapace.protobuf.schema import Dependency
 from karapace.rapu import HTTPRequest, JSON_CONTENT_TYPE, SERVER_NAME
 from karapace.schema_models import SchemaType, TypedSchema, ValidatedTypedSchema
 from karapace.schema_references import References
@@ -844,7 +845,7 @@ class KarapaceSchemaRegistryController(KarapaceBase):
                 schema_type=schema_type,
                 schema_str=schema_str,
                 references=new_schema_references,
-                schema_reader=self.schema_registry.schema_reader,
+                dependencies=self.resolve_references(references),
             )
         except InvalidSchema:
             self.log.exception("No proper parser found")
@@ -929,7 +930,7 @@ class KarapaceSchemaRegistryController(KarapaceBase):
                 schema_type=schema_type,
                 schema_str=body["schema"],
                 references=new_schema_references,
-                schema_reader=self.schema_registry.schema_reader,
+                dependencies=self.resolve_references(new_schema_references),
             )
         except (InvalidSchema, InvalidSchemaType) as e:
             self.log.warning("Invalid schema: %r", body["schema"], exc_info=True)
@@ -1017,3 +1018,22 @@ class KarapaceSchemaRegistryController(KarapaceBase):
             content_type=content_type,
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
+
+    def resolve_references(self, references: Optional["References"] = None) -> Optional[Dict[str, Dependency]]:
+
+        if references is None:
+            return
+        dependencies = dict()
+
+        for r in references.val():
+            subject = r["subject"]
+            version = r["version"]
+            name = r["name"]
+            subject_data = self.schema_registry.schema_reader.subjects.get(subject)
+            schema_data = subject_data["schemas"][version]
+            parsed_schema = ValidatedTypedSchema.parse(
+                schema_type=schema_data["schema"].schema_type,
+                schema_str=schema_data["schema"].schema_str,
+                dependencies=self.resolve_references(schema_data.get("references")),
+            )
+            dependencies[name] = Dependency(name, subject, version, parsed_schema)
