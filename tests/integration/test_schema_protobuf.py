@@ -107,18 +107,40 @@ async def test_protobuf_schema_compatibility(registry_async_client: Client, trai
 
 
 async def test_protobuf_schema_references(registry_async_client: Client) -> None:
+
     customer_schema = """
+                |syntax = "proto3";
+                |package a1;
+                |import "Place.proto";
+                |message Customer {
+                |        string name = 1;
+                |        int32 code = 2;
+                |        Place place = 3;
+                |}
+                |"""
+
+    customer_schema = trim_margin(customer_schema)
+
+    place_schema = """
             |syntax = "proto3";
             |package a1;
-            |message Customer {
-            |        string name = 1;
-            |        int32 code = 2;
+            |message Place {
+            |        string city = 1;
+            |        int32 zone = 2;
             |}
             |"""
 
-    customer_schema = trim_margin(customer_schema)
+    place_schema = trim_margin(place_schema)
     res = await registry_async_client.post(
-        "subjects/customer/versions", json={"schemaType": "PROTOBUF", "schema": customer_schema}
+        "subjects/place/versions", json={"schemaType": "PROTOBUF", "schema": place_schema}
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+
+    customer_references = [{"name": "Place.proto", "subject": "place", "version": 1}]
+    res = await registry_async_client.post(
+        "subjects/customer/versions",
+        json={"schemaType": "PROTOBUF", "schema": customer_schema, "references": customer_references},
     )
     assert res.status_code == 200
     assert "id" in res.json()
@@ -161,15 +183,23 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
     res = await registry_async_client.get("subjects/customer/versions/latest/referencedby", json={})
     assert res.status_code == 200
     myjson = res.json()
-    referents = [2]
+    referents = [3]
     assert not any(x != y for x, y in zip(myjson, referents))
+
+    res = await registry_async_client.get("subjects/place/versions/latest/referencedby", json={})
+    assert res.status_code == 200
+    myjson = res.json()
 
     res = await registry_async_client.delete("subjects/customer/versions/1")
     assert res.status_code == 404
-    match_msg = "Subject 'customer' Version 1 cannot be not be deleted because it is referenced by schemas with ids:[2]"
-
+    match_msg = "One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=customer,version=1}"
     myjson = res.json()
     assert myjson["error_code"] == 42206 and myjson["message"] == match_msg
+    res = await registry_async_client.delete("subjects/test_schema/versions/1")
+    assert res.status_code == 200
+
+    res = await registry_async_client.delete("subjects/customer/versions/1")
+    assert res.status_code == 200
 
 
 async def test_protobuf_schema_verifier(registry_async_client: Client) -> None:
@@ -234,7 +264,7 @@ async def test_protobuf_schema_verifier(registry_async_client: Client) -> None:
 
     res = await registry_async_client.delete("subjects/customer/versions/1")
     assert res.status_code == 404
-    match_msg = "Subject 'customer' Version 1 cannot be not be deleted because it is referenced by schemas with ids:[2]"
+    match_msg = "One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=customer,version=1}"
     myjson = res.json()
     assert myjson["error_code"] == 42206 and myjson["message"] == match_msg
 

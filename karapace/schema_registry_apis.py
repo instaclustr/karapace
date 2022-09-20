@@ -551,8 +551,8 @@ class KarapaceSchemaRegistryController(KarapaceBase):
                     body={
                         "error_code": SchemaErrorCodes.REFERENCE_EXISTS.value,
                         "message": (
-                            f"Subject '{subject}' Version {arg.version} cannot be not be deleted "
-                            "because it is referenced by schemas with ids:[" + ", ".join(map(str, arg.referenced_by)) + "]"
+                            f"One or more references exist to the schema "
+                            f"{{magic=1,keytype=SCHEMA,subject={subject},version={arg.version}}}"
                         ),
                     },
                     content_type=content_type,
@@ -645,8 +645,8 @@ class KarapaceSchemaRegistryController(KarapaceBase):
                     body={
                         "error_code": SchemaErrorCodes.REFERENCE_EXISTS.value,
                         "message": (
-                            f"Subject '{subject}' Version {arg.version} cannot be not be deleted "
-                            "because it is referenced by schemas with ids:[" + ", ".join(map(str, arg.referenced_by)) + "]"
+                            f"One or more references exist to the schema "
+                            f"{{magic=1,keytype=SCHEMA,subject={subject},version={arg.version}}}"
                         ),
                     },
                     content_type=content_type,
@@ -1031,9 +1031,14 @@ class KarapaceSchemaRegistryController(KarapaceBase):
             name = r["name"]
             subject_data = self.schema_registry.schema_reader.subjects.get(subject)
             schema_data = subject_data["schemas"][version]
+            sub_refs = schema_data.get("references")
+            sub_references = None
+            if sub_refs is not None:
+                sub_references = References(references.schema_type, sub_refs)
+
             parsed_schema = ValidatedTypedSchema.parse(
                 schema_type=schema_data["schema"].schema_type,
                 schema_str=schema_data["schema"].schema_str,
-                dependencies=self.resolve_references(schema_data.get("references")),
+                dependencies=self.resolve_references(sub_references),
             )
             dependencies[name] = Dependency(name, subject, version, parsed_schema)

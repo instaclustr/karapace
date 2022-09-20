@@ -266,7 +266,6 @@ async def test_record_schema_subject_compatibility(registry_async_client: Client
 
     res = await registry_async_client.get(f"subjects/{subject}/versions/1")
     assert res.status_code == 200
-    r = res.json()
     assert res.json() == result
     result = {"id": 2, "schema": json.dumps(evolved_schema), "subject": subject, "version": 2}
 

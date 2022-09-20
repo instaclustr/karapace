@@ -402,10 +402,8 @@ class KafkaSchemaReader(Thread):
                     ref_str = reference_key(ref["subject"], ref["version"])
                     referents = self.referenced_by.get(ref_str, None)
                     if referents:
-                        LOG.info("Adding entry subject referenced_by : %r", ref_str)
                         referents.append(schema_id)
                     else:
-                        LOG.info("Adding entry subject referenced_by : %r", ref_str)
                         self.referenced_by[ref_str] = [schema_id]
 
             self.schemas[schema_id] = typed_schema
