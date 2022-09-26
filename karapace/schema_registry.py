@@ -530,7 +530,7 @@ class KarapaceSchemaRegistry:
             schema = schema_data.get("schema")
             if schema is None:
                 raise InvalidReferences
-            if isinstance(schema,TypedSchema):
+            if isinstance(schema, TypedSchema):
                 schema_type = schema.schema_type
             else:
                 schema_type = None

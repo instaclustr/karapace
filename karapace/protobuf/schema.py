@@ -107,8 +107,7 @@ class ProtobufSchema:
     DEFAULT_LOCATION = Location.get("")
 
     def __init__(
-            self, schema: str, references: Optional[References] = None,
-            dependencies: Optional[Dict[str, Dependency]] = None
+        self, schema: str, references: Optional[References] = None, dependencies: Optional[Dict[str, Dependency]] = None
     ) -> None:
         if type(schema).__name__ != "str":
             raise IllegalArgumentException("Non str type of schema string")
@@ -155,7 +154,7 @@ class ProtobufSchema:
                 self._process_nested_type(verifier, package_name, type_name, nested_type)
 
     def _process_nested_type(
-            self, verifier: ProtobufDependencyVerifier, package_name: str, parent_name, element_type: TypeElement
+        self, verifier: ProtobufDependencyVerifier, package_name: str, parent_name, element_type: TypeElement
     ):
 
         verifier.add_declared_type(package_name + "." + parent_name + "." + element_type.name)
