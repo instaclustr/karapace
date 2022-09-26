@@ -135,6 +135,7 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
         "subjects/place/versions", json={"schemaType": "PROTOBUF", "schema": place_schema}
     )
     assert res.status_code == 200
+
     assert "id" in res.json()
 
     customer_references = [{"name": "Place.proto", "subject": "place", "version": 1}]
@@ -143,7 +144,9 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
         json={"schemaType": "PROTOBUF", "schema": customer_schema, "references": customer_references},
     )
     assert res.status_code == 200
+
     assert "id" in res.json()
+
     original_schema = """
             |syntax = "proto3";
             |package a1;
@@ -179,22 +182,27 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
         json={"schemaType": "PROTOBUF", "schema": original_schema, "references": references},
     )
     assert res.status_code == 200
+
     assert "id" in res.json()
+
     res = await registry_async_client.get("subjects/customer/versions/latest/referencedby", json={})
     assert res.status_code == 200
+
     myjson = res.json()
     referents = [3]
     assert not any(x != y for x, y in zip(myjson, referents))
 
     res = await registry_async_client.get("subjects/place/versions/latest/referencedby", json={})
     assert res.status_code == 200
-    myjson = res.json()
 
+    myjson = res.json()
     res = await registry_async_client.delete("subjects/customer/versions/1")
     assert res.status_code == 404
+
     match_msg = "One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=customer,version=1}"
     myjson = res.json()
     assert myjson["error_code"] == 42206 and myjson["message"] == match_msg
+
     res = await registry_async_client.delete("subjects/test_schema/versions/1")
     assert res.status_code == 200
 

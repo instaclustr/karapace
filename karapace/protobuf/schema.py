@@ -107,7 +107,8 @@ class ProtobufSchema:
     DEFAULT_LOCATION = Location.get("")
 
     def __init__(
-        self, schema: str, references: Optional[References] = None, dependencies: Optional[Dict[str, Dependency]] = None
+            self, schema: str, references: Optional[References] = None,
+            dependencies: Optional[Dict[str, Dependency]] = None
     ) -> None:
         if type(schema).__name__ != "str":
             raise IllegalArgumentException("Non str type of schema string")
@@ -129,11 +130,9 @@ class ProtobufSchema:
 
     def collect_dependencies(self, verifier: ProtobufDependencyVerifier):
 
-        if self.dependencies is None:
-            return
-
-        for key in self.dependencies:
-            self.dependencies[key].schema.schema.collect_dependencies(verifier)
+        if self.dependencies:
+            for key in self.dependencies:
+                self.dependencies[key].schema.schema.collect_dependencies(verifier)
         # verifier.add_import?? we have no access to own Kafka structure from this class...
         # but we need data to analyse imports to avoid ciclyc dependencies...
 
@@ -156,7 +155,7 @@ class ProtobufSchema:
                 self._process_nested_type(verifier, package_name, type_name, nested_type)
 
     def _process_nested_type(
-        self, verifier: ProtobufDependencyVerifier, package_name: str, parent_name, element_type: TypeElement
+            self, verifier: ProtobufDependencyVerifier, package_name: str, parent_name, element_type: TypeElement
     ):
 
         verifier.add_declared_type(package_name + "." + parent_name + "." + element_type.name)

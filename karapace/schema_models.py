@@ -171,7 +171,11 @@ class ValidatedTypedSchema(TypedSchema):
             raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
 
         return ValidatedTypedSchema(
-            schema_type=schema_type, schema_str=schema_str, schema=parsed_schema, references=references
+            schema_type=schema_type,
+            schema_str=schema_str,
+            schema=parsed_schema,
+            references=references,
+            dependencies=dependencies,
         )
 
     def __str__(self) -> str:

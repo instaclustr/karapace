@@ -25,6 +25,10 @@ class InvalidReferences(Exception):
     pass
 
 
+class ReferencesNotSupportedException(Exception):
+    pass
+
+
 class SchemasNotFoundException(Exception):
     pass
 

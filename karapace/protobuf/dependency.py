@@ -37,7 +37,6 @@ class ProtobufDependencyVerifier:
                 used_type_with_scope = used_type[:delimiter] + "." + used_type[delimiter + 1 :]
                 used_type = used_type[delimiter + 1 :]
 
-            # TODO: it must be improved !!!
             if not (
                 used_type in DependenciesHardcoded.index
                 or KnownDependency.index_simple.get(used_type) is not None
