@@ -1,18 +1,6 @@
-from karapace.config import read_config
 from karapace.protobuf.dependency import ProtobufDependencyVerifier
-from karapace.serialization import (
-    InvalidMessageHeader,
-    InvalidMessageSchema,
-    InvalidPayload,
-    SchemaRegistryDeserializer,
-    SchemaRegistrySerializer,
-    START_BYTE,
-)
-from tests.utils import test_fail_objects_protobuf, test_objects_protobuf
 
 import logging
-import pytest
-import struct
 
 log = logging.getLogger(__name__)
 
@@ -64,4 +52,3 @@ async def test_protobuf_dependency_verifier():
 
     verifier.add_used_type("TestMessage.Delta", "Tag")
     assert result.result, False
-
