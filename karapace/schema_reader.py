@@ -10,11 +10,12 @@ from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import KafkaConfigurationError, NoBrokersAvailable, NodeNotReadyError, TopicAlreadyExistsError
 from karapace import constants
 from karapace.config import Config
+from karapace.errors import InvalidSchema
 from karapace.key_format import is_key_in_canonical_format, KeyFormatter, KeyMode
 from karapace.master_coordinator import MasterCoordinator
-from karapace.schema_models import TypedSchema
-from karapace.schema_type import SchemaType
+from karapace.schema_models import SchemaType, TypedSchema, ValidatedTypedSchema
 from karapace.statsd import StatsClient
+from karapace.typing import SubjectData
 from karapace.utils import KarapaceKafkaClient, reference_key
 from threading import Condition, Event, Lock, Thread
 from typing import Any, Dict, List, Optional
@@ -26,8 +27,6 @@ Offset = int
 Subject = str
 Version = int
 Schema = Dict[str, Any]
-# Container type for a subject, with configuration settings and all the schemas
-SubjectData = Dict[str, Any]
 Referents = List
 SchemaId = int
 
@@ -38,6 +37,14 @@ LOG = logging.getLogger(__name__)
 
 KAFKA_CLIENT_CREATION_TIMEOUT_SECONDS = 2.0
 SCHEMA_TOPIC_CREATION_TIMEOUT_SECONDS = 5.0
+
+
+# Metric names
+METRIC_SCHEMA_TOPIC_RECORDS_PROCESSED_COUNT = "karapace_schema_reader_records_processed"
+METRIC_SCHEMA_TOPIC_RECORDS_PER_KEYMODE_GAUGE = "karapace_schema_reader_records_per_keymode"
+METRIC_SCHEMAS_GAUGE = "karapace_schema_reader_schemas"
+METRIC_SUBJECTS_GAUGE = "karapace_schema_reader_subjects"
+METRIC_SUBJECT_DATA_SCHEMA_VERSIONS_GAUGE = "karapace_schema_reader_subject_data_schema_versions"
 
 
 def _create_consumer_from_config(config: Config) -> KafkaConsumer:
@@ -170,6 +177,10 @@ class KafkaSchemaReader(Thread):
 
         self.key_formatter = key_formatter
 
+        # Metrics
+        self.processed_canonical_keys_total = 0
+        self.processed_deprecated_karapace_keys_total = 0
+
     def get_schema_id(self, new_schema: TypedSchema) -> int:
         with self.id_lock:
             for schema_id, schema in self.schemas.items():
@@ -263,6 +274,8 @@ class KafkaSchemaReader(Thread):
                 watch_offsets = True
 
         for _, msgs in raw_msgs.items():
+            schema_records_processed_keymode_canonical = 0
+            schema_records_processed_keymode_deprecated_karapace = 0
             for msg in msgs:
                 try:
                     key = json.loads(msg.key.decode("utf8"))
@@ -270,12 +283,13 @@ class KafkaSchemaReader(Thread):
                     LOG.exception("Invalid JSON in msg.key")
                     continue
 
+                msg_keymode = KeyMode.CANONICAL if is_key_in_canonical_format(key) else KeyMode.DEPRECATED_KARAPACE
                 # Key mode detection happens on startup.
                 # Default keymode is CANONICAL and preferred unless any data consumed
                 # has key in non-canonical format. If keymode is set to DEPRECATED_KARAPACE
                 # the subsequent keys are omitted from detection.
                 if not self.ready and self.key_formatter.get_keymode() == KeyMode.CANONICAL:
-                    if not is_key_in_canonical_format(key):
+                    if msg_keymode == KeyMode.DEPRECATED_KARAPACE:
                         self.key_formatter.set_keymode(KeyMode.DEPRECATED_KARAPACE)
 
                 value = None
@@ -288,8 +302,76 @@ class KafkaSchemaReader(Thread):
 
                 self.handle_msg(key, value)
                 self.offset = msg.offset
+
+                if msg_keymode == KeyMode.CANONICAL:
+                    schema_records_processed_keymode_canonical += 1
+                else:
+                    schema_records_processed_keymode_deprecated_karapace += 1
+
                 if self.ready and watch_offsets:
                     self.offset_watcher.offset_seen(self.offset)
+
+            self._report_schema_metrics(
+                schema_records_processed_keymode_canonical,
+                schema_records_processed_keymode_deprecated_karapace,
+            )
+
+    def _report_schema_metrics(
+        self,
+        schema_records_processed_keymode_canonical: int,
+        schema_records_processed_keymode_deprecated_karapace: int,
+    ) -> None:
+        # Update processing counter always.
+        self.stats.increase(
+            metric=METRIC_SCHEMA_TOPIC_RECORDS_PROCESSED_COUNT,
+            inc_value=schema_records_processed_keymode_canonical,
+            tags={"keymode": KeyMode.CANONICAL},
+        )
+        self.stats.increase(
+            metric=METRIC_SCHEMA_TOPIC_RECORDS_PROCESSED_COUNT,
+            inc_value=schema_records_processed_keymode_deprecated_karapace,
+            tags={"keymode": KeyMode.DEPRECATED_KARAPACE},
+        )
+
+        # Update following gauges only if there is a possibility of a change.
+        records_processed = bool(
+            schema_records_processed_keymode_canonical or schema_records_processed_keymode_deprecated_karapace
+        )
+        if records_processed:
+            self.processed_canonical_keys_total += schema_records_processed_keymode_canonical
+            self.stats.gauge(
+                metric=METRIC_SCHEMA_TOPIC_RECORDS_PER_KEYMODE_GAUGE,
+                value=self.processed_canonical_keys_total,
+                tags={"keymode": KeyMode.CANONICAL},
+            )
+            self.processed_deprecated_karapace_keys_total += schema_records_processed_keymode_deprecated_karapace
+            self.stats.gauge(
+                metric=METRIC_SCHEMA_TOPIC_RECORDS_PER_KEYMODE_GAUGE,
+                value=self.processed_deprecated_karapace_keys_total,
+                tags={"keymode": KeyMode.DEPRECATED_KARAPACE},
+            )
+
+            self.stats.gauge(metric=METRIC_SCHEMAS_GAUGE, value=len(self.schemas))
+            self.stats.gauge(metric=METRIC_SUBJECTS_GAUGE, value=len(self.subjects))
+            versions = 0
+            soft_deleted_versions = 0
+            for _, subject_data in self.subjects.items():
+                schema_data = subject_data.get("schemas", {})
+                for version in schema_data.values():
+                    if not version.get("deleted", False):
+                        versions += 1
+                    else:
+                        soft_deleted_versions += 1
+            self.stats.gauge(
+                metric=METRIC_SUBJECT_DATA_SCHEMA_VERSIONS_GAUGE,
+                value=versions,
+                tags={"state": "live"},
+            )
+            self.stats.gauge(
+                metric=METRIC_SUBJECT_DATA_SCHEMA_VERSIONS_GAUGE,
+                value=soft_deleted_versions,
+                tags={"state": "soft_deleted"},
+            )
 
     def _handle_msg_config(self, key: dict, value: Optional[dict]) -> None:
         subject = key.get("subject")
@@ -358,13 +440,20 @@ class KafkaSchemaReader(Thread):
         # - Validates the schema's JSON
         # - Re-encode the schema to make sure small differences on formatting
         # won't interfere with the equality. Note: This means it is possible
-        # for the REST API to return data that is formated differently from
+        # for the REST API to return data that is formatted differently from
         # what is available in the topic.
         if schema_type_parsed in [SchemaType.AVRO, SchemaType.JSONSCHEMA]:
             try:
                 schema_str = json.dumps(json.loads(schema_str), sort_keys=True)
             except json.JSONDecodeError:
-                LOG.error("Schema is not invalid JSON")
+                LOG.error("Schema is not valid JSON")
+                return
+        elif schema_type_parsed == SchemaType.PROTOBUF:
+            try:
+                parsed_schema = ValidatedTypedSchema.parse(SchemaType.PROTOBUF, schema_str)
+                schema_str = str(parsed_schema)
+            except InvalidSchema:
+                LOG.exception("Schema is not valid ProtoBuf definition")
                 return
 
         if schema_subject not in self.subjects:
@@ -443,6 +532,20 @@ class KafkaSchemaReader(Thread):
             key: val for key, val in self.subjects[subject]["schemas"].items() if val.get("deleted", False) is False
         }
         return non_deleted_schemas
+
+    def get_schemas_list(self, *, include_deleted: bool, latest_only: bool) -> Dict[Subject, SubjectData]:
+        res_schemas = {}
+        for subject, subject_data in self.subjects.items():
+            selected_schemas = []
+            schemas = list(subject_data["schemas"].values())
+            if latest_only:
+                selected_schemas = schemas[-1]
+            else:
+                selected_schemas = schemas
+            if include_deleted:
+                selected_schemas = [schema for schema in selected_schemas if schema.get("deleted", False) is False]
+            res_schemas[subject] = selected_schemas
+        return res_schemas
 
     def remove_referenced_by(self, schema_id: SchemaId, references: List):
         for ref in references:

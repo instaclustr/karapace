@@ -1,6 +1,7 @@
 from kafka.errors import UnknownTopicOrPartitionError
 from pytest import raises
 from tests.utils import (
+    new_random_name,
     new_topic,
     REST_HEADERS,
     schema_avro_json,
@@ -109,6 +110,28 @@ async def test_content_types(rest_async_client, admin_client):
         assert not res.ok
 
 
+async def test_avro_publish_primitive_schema(rest_async_client, admin_client):
+    topic_str = new_topic(admin_client)
+    topic_int = new_topic(admin_client)
+    await wait_for_topics(rest_async_client, topic_names=[topic_str, topic_int], timeout=NEW_TOPIC_TIMEOUT, sleep=1)
+    for topic, value_schema, records in [
+        (topic_str, '"string"', [{"value": "foobar"}]),
+        (topic_str, '{"type":"string"}', [{"value": "foobar2"}]),
+        (topic_int, '"int"', [{"value": 1}]),
+        (topic_int, '{"type":"int"}', [{"value": 2}]),
+    ]:
+        url = f"/topics/{topic}"
+        res = await rest_async_client.post(
+            url, json={"value_schema": value_schema, "records": records}, headers=REST_HEADERS["avro"]
+        )
+        res_json = res.json()
+        assert res.ok
+        assert "offsets" in res_json
+        if "partition" in url:
+            for o in res_json["offsets"]:
+                assert "partition" in o
+
+
 async def test_avro_publish(rest_async_client, registry_async_client, admin_client):
     tn = new_topic(admin_client)
     other_tn = new_topic(admin_client)
@@ -168,12 +191,10 @@ async def test_admin_client(admin_client, producer):
     assert offsets["beginning_offset"] == 0, f"Start offset should be 0 for {topic_names[0]}, partition 0"
     assert offsets["end_offset"] == 5, f"End offset should be 0 for {topic_names[0]}, partition 0"
     # invalid requests
-    off = admin_client.get_offsets("invalid_topic", 0)
-    assert off["beginning_offset"] == -1
-    assert off["end_offset"] == -1
-    off = admin_client.get_offsets(topic_names[0], 10)
-    assert off["beginning_offset"] == -1
-    assert off["end_offset"] == -1
+    with raises(UnknownTopicOrPartitionError):
+        admin_client.get_offsets("invalid_topic", 0)
+    with raises(UnknownTopicOrPartitionError):
+        admin_client.get_offsets(topic_names[0], 10)
     with raises(UnknownTopicOrPartitionError):
         admin_client.get_topic_config("another_invalid_name")
     with raises(UnknownTopicOrPartitionError):
@@ -186,7 +207,8 @@ async def test_internal(rest_async, admin_client):
         [b"key", b"value", 0],
         [b"key", b"value", None],
     ]
-    results = await rest_async.produce_messages(topic=topic_name, prepared_records=prepared_records)
+    rest_async_proxy = await rest_async.get_user_proxy(None)
+    results = await rest_async_proxy.produce_messages(topic=topic_name, prepared_records=prepared_records)
     assert len(results) == 2
     for result in results:
         assert "error" not in result, "Valid result should not contain 'error' key"
@@ -199,7 +221,7 @@ async def test_internal(rest_async, admin_client):
         [b"key", b"value", 100],
     ]
 
-    results = await rest_async.produce_messages(topic=topic_name, prepared_records=prepared_records)
+    results = await rest_async_proxy.produce_messages(topic=topic_name, prepared_records=prepared_records)
     assert len(results) == 1
     for result in results:
         assert "error" in result, "Invalid result missing 'error' key"
@@ -207,9 +229,9 @@ async def test_internal(rest_async, admin_client):
         assert "error_code" in result, "Invalid result missing 'error_code' key"
         assert result["error_code"] == 1
 
-    assert rest_async.all_empty({"records": [{"key": {"foo": "bar"}}]}, "key") is False
-    assert rest_async.all_empty({"records": [{"value": {"foo": "bar"}}]}, "value") is False
-    assert rest_async.all_empty({"records": [{"value": {"foo": "bar"}}]}, "key") is True
+    assert rest_async_proxy.all_empty({"records": [{"key": {"foo": "bar"}}]}, "key") is False
+    assert rest_async_proxy.all_empty({"records": [{"value": {"foo": "bar"}}]}, "value") is False
+    assert rest_async_proxy.all_empty({"records": [{"value": {"foo": "bar"}}]}, "key") is True
 
 
 async def test_topics(rest_async_client, admin_client):
@@ -288,8 +310,37 @@ async def test_publish_malformed_requests(rest_async_client, admin_client):
         assert res_json["error_code"] == 42201
         res = await rest_async_client.post(url, json={"records": [{"value": "not base64"}]}, headers=REST_HEADERS["binary"])
         res_json = res.json()
+        assert res.status_code == 400
+        assert res_json["error_code"] == 400
+
+        res = await rest_async_client.post(url, json={"records": "should be an array"}, headers=REST_HEADERS["binary"])
+        assert res.status_code == 400
+
+        res = await rest_async_client.post(url, json={"records": ["object with value"]}, headers=REST_HEADERS["binary"])
+        assert res.status_code == 400
+
+        # Binary format excepts base64 encoded string as value
+        res = await rest_async_client.post(url, json={"records": [{"value": {"a": 1}}]}, headers=REST_HEADERS["binary"])
+        assert res.status_code == 400
+
+        res = await rest_async_client.post(url, json={"records": [{"value": "YmFzZTY0"}]}, headers=REST_HEADERS["avro"])
         assert res.status_code == 422
-        assert res_json["error_code"] == 42205
+
+        res = await rest_async_client.post(url, json={"records": [{"value": "not b64"}]}, headers=REST_HEADERS["avro"])
+        assert res.status_code == 422
+
+
+async def test_publish_to_nonexisting_topic(rest_async_client):
+    tn = new_random_name("topic-that-should-not-exist")
+    header = REST_HEADERS["avro"]
+    # check succeeds with 1 record and brand new schema
+    urls = [f"/topics/{tn}", f"/topics/{tn}/partitions/0"]
+    for url in urls:
+        for pl_type in ["key", "value"]:
+            correct_payload = {f"{pl_type}_schema": schema_avro_json, "records": [{pl_type: o} for o in test_objects_avro]}
+            res = await rest_async_client.post(url, correct_payload, headers=header)
+            assert res.status_code == 404
+            assert res.json()["error_code"] == 40401, "Error code should be for topic not found"
 
 
 async def test_publish_incompatible_schema(rest_async_client, admin_client):
@@ -364,6 +415,17 @@ async def test_partitions(rest_async_client, admin_client, producer):
     res = await rest_async_client.get("/topics/fooo/partitions")
     assert res.status_code == 404
     assert res.json()["error_code"] == 40401
+
+    # Fill cache
+    res = await rest_async_client.get("/brokers")
+    assert res.ok
+
+    res = await rest_async_client.get("/topics/fooo/partitions/0")
+    assert res.status_code == 404
+    assert res.json()["error_code"] == 40401
+
+    # Clear cache
+    await asyncio.sleep(3)
     res = await rest_async_client.get("/topics/fooo/partitions/0")
     assert res.status_code == 404
     assert res.json()["error_code"] == 40401
@@ -378,7 +440,9 @@ async def test_partitions(rest_async_client, admin_client, producer):
     data = offset_res.json()
     assert data == {"beginning_offset": 0, "end_offset": 5}, "Unexpected offsets for topic %r: %r" % (topic_name, data)
     res = await rest_async_client.get("/topics/fooo/partitions/0/offsets", headers=header)
-    assert res.json() == {"beginning_offset": -1, "end_offset": -1}
+    assert res.status_code == 404
+    assert res.json()["error_code"] == 40401
+    assert "Topic fooo not found" in res.json()["message"]
     res = await rest_async_client.get(f"/topics/{topic_name}/partitions/foo/offsets", headers=header)
     assert res.status_code == 404
     assert res.json()["error_code"] == 404

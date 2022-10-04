@@ -54,3 +54,11 @@ class ReferenceExistsException(Exception):
         super().__init__()
         self.version = version
         self.referenced_by = referenced_by
+
+
+class SubjectSoftDeletedException(Exception):
+    pass
+
+
+class SchemaTooLargeException(Exception):
+    pass

@@ -9,6 +9,7 @@ from kafka import KafkaProducer
 from karapace.client import Client
 from karapace.rapu import is_success
 from karapace.schema_registry_apis import SchemaErrorMessages
+from karapace.utils import json_encode
 from tests.integration.utils.cluster import RegistryDescription
 from tests.integration.utils.kafka_server import KafkaServers
 from tests.utils import (
@@ -1172,6 +1173,57 @@ async def test_schema_versions_deleting(registry_async_client: Client, trail: st
 
 
 @pytest.mark.parametrize("trail", ["", "/"])
+async def test_schema_delete_latest_version(registry_async_client: Client, trail: str) -> None:
+    """
+    Tests deleting schema with `latest` version.
+    """
+    subject = create_subject_name_factory(f"test_schema_delete_latest_version_{trail}")()
+    schema_name = create_schema_name_factory(f"test_schema_delete_latest_version_{trail}")()
+
+    schema_1 = {
+        "type": "record",
+        "name": schema_name,
+        "fields": [{"name": "field_1", "type": "string"}, {"name": "field_2", "type": "string"}],
+    }
+    schema_str_1 = json.dumps(schema_1)
+    schema_2 = {
+        "type": "record",
+        "name": schema_name,
+        "fields": [
+            {"name": "field_1", "type": "string"},
+        ],
+    }
+    schema_str_2 = json.dumps(schema_2)
+
+    schema_id_1, version_1 = await register_schema(registry_async_client, trail, subject, schema_str_1)
+    schema_1_versions = [(subject, version_1)]
+    await assert_schema_versions(registry_async_client, trail, schema_id_1, schema_1_versions)
+
+    res = await registry_async_client.put(f"config/{subject}{trail}", json={"compatibility": "BACKWARD"})
+    assert res.status_code == 200
+
+    schema_id_2, version_2 = await register_schema(registry_async_client, trail, subject, schema_str_2)
+    schema_2_versions = [(subject, version_2)]
+    await assert_schema_versions(registry_async_client, trail, schema_id_2, schema_2_versions)
+
+    # Deleting latest version, the other still found
+    res = await registry_async_client.delete("subjects/{}/versions/latest".format(subject))
+    assert res.status_code == 200
+    assert res.json() == version_2
+
+    await assert_schema_versions(registry_async_client, trail, schema_id_1, schema_1_versions)
+    await assert_schema_versions(registry_async_client, trail, schema_id_2, [])
+
+    # Deleting the latest version, no schemas left
+    res = await registry_async_client.delete("subjects/{}/versions/latest".format(subject))
+    assert res.status_code == 200
+    assert res.json() == version_1
+
+    await assert_schema_versions(registry_async_client, trail, schema_id_1, [])
+    await assert_schema_versions(registry_async_client, trail, schema_id_2, [])
+
+
+@pytest.mark.parametrize("trail", ["", "/"])
 async def test_schema_types(registry_async_client: Client, trail: str) -> None:
     """
     Tests for /schemas/types endpoint.
@@ -1773,6 +1825,52 @@ async def test_schema_json_subject_comparison(registry_async_client: Client) -> 
     }
 
 
+async def test_schema_listing(registry_async_client: Client) -> None:
+    subject_name_factory = create_subject_name_factory("test_schema_listing_subject_")
+    schema_name = create_schema_name_factory("test_schema_listing_subject_")()
+
+    schema_str = json.dumps(
+        {
+            "type": "record",
+            "name": schema_name,
+            "fields": [
+                {
+                    "name": "f",
+                    "type": "string",
+                }
+            ],
+        }
+    )
+    subject_1 = subject_name_factory()
+    res = await registry_async_client.post(
+        f"subjects/{subject_1}/versions",
+        json={"schema": schema_str},
+    )
+    assert res.status_code == 200
+
+    subject_2 = subject_name_factory()
+    res = await registry_async_client.post(
+        f"subjects/{subject_2}/versions",
+        json={"schema": schema_str},
+    )
+    assert res.status_code == 200
+    schema_id_2 = res.json()["id"]
+
+    # Soft delete schema 2
+    res = await registry_async_client.delete(f"subjects/{subject_2}/versions/{schema_id_2}")
+    assert res.status_code == 200
+    assert res.json() == 1
+
+    res = await registry_async_client.get("subjects/")
+    assert len(res.json()) == 1
+    assert res.json()[0] == subject_1
+
+    res = await registry_async_client.get("subjects/?deleted=true")
+    assert len(res.json()) == 2
+    assert res.json()[0] == subject_1
+    assert res.json()[1] == subject_2
+
+
 @pytest.mark.parametrize("trail", ["", "/"])
 async def test_schema_version_number_existing_schema(registry_async_client: Client, trail: str) -> None:
     """
@@ -1891,8 +1989,10 @@ async def test_config(registry_async_client: Client, trail: str) -> None:
 
     res = await registry_async_client.get(f"config/{subject_1}{trail}")
     assert res.status_code == 404
-    assert res.json()["error_code"] == 40401
-    assert res.json()["message"] == SchemaErrorMessages.SUBJECT_NOT_FOUND_FMT.value.format(subject=subject_1)
+    assert res.json()["error_code"] == 40408
+    assert res.json()["message"] == SchemaErrorMessages.SUBJECT_LEVEL_COMPATIBILITY_NOT_CONFIGURED_FMT.value.format(
+        subject=subject_1
+    )
 
     res = await registry_async_client.put(f"config/{subject_1}{trail}", json={"compatibility": "FULL"})
     assert res.status_code == 200
@@ -1902,6 +2002,19 @@ async def test_config(registry_async_client: Client, trail: str) -> None:
     res = await registry_async_client.get(f"config/{subject_1}{trail}")
     assert res.status_code == 200
     assert res.json()["compatibilityLevel"] == "FULL"
+
+    # Delete set compatibility on subject 1
+    res = await registry_async_client.delete(f"config/{subject_1}{trail}")
+    assert res.status_code == 200
+    assert res.json()["compatibility"] == "NONE"
+
+    # Verify compatibility not set on subject after delete
+    res = await registry_async_client.get(f"config/{subject_1}{trail}")
+    assert res.status_code == 404
+    assert res.json()["error_code"] == 40408
+    assert res.json()["message"] == SchemaErrorMessages.SUBJECT_LEVEL_COMPATIBILITY_NOT_CONFIGURED_FMT.value.format(
+        subject=subject_1
+    )
 
     # It's possible to add a config to a subject that doesn't exist yet
     subject_2 = subject_name_factory()
@@ -2113,7 +2226,7 @@ async def test_invalid_namespace(registry_async_client: Client) -> None:
     res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": json.dumps(schema)})
     assert res.status_code == 422, res.json()
     json_res = res.json()
-    assert json_res["error_code"] == 44201, json_res
+    assert json_res["error_code"] == 42201, json_res
     expected_message = (
         "Invalid AVRO schema. Error: foo-bar-baz is not a valid Avro name because it does not match the pattern "
         "(?:^|\\.)[A-Za-z_][A-Za-z0-9_]*$"
@@ -2408,12 +2521,24 @@ async def test_schema_hard_delete_version(registry_async_client: Client) -> None
     assert res.json()["error_code"] == 40402
     assert res.json()["message"] == "Version 1 not found."
 
+    # Check that soft deleted is found when asking also for deleted schemas
+    res = await registry_async_client.get(f"subjects/{subject}/versions/1?deleted=true")
+    assert res.status_code == 200
+    assert res.json()["version"] == 1
+    assert res.json()["subject"] == subject
+
     # Hard delete schema v1
     res = await registry_async_client.delete(f"subjects/{subject}/versions/1?permanent=true")
     assert res.status_code == 200
 
     # Cannot hard delete twice
     res = await registry_async_client.delete(f"subjects/{subject}/versions/1?permanent=true")
+    assert res.status_code == 404
+    assert res.json()["error_code"] == 40402
+    assert res.json()["message"] == "Version 1 not found."
+
+    # Check hard deleted is not found at all
+    res = await registry_async_client.get(f"subjects/{subject}/versions/1?deleted=true")
     assert res.status_code == 404
     assert res.json()["error_code"] == 40402
     assert res.json()["message"] == "Version 1 not found."
@@ -2483,6 +2608,12 @@ async def test_schema_hard_delete_whole_schema(registry_async_client: Client) ->
     assert res.status_code == 404
     assert res.json()["error_code"] == 40401
     assert res.json()["message"] == f"Subject '{subject}' not found."
+
+    # Soft delete cannot be done twice
+    res = await registry_async_client.delete(f"subjects/{subject}")
+    assert res.status_code == 404
+    assert res.json()["error_code"] == 40404
+    assert res.json()["message"] == f"Subject '{subject}' was soft deleted.Set permanent=true to delete permanently"
 
     # Hard delete whole schema
     res = await registry_async_client.delete(f"subjects/{subject}?permanent=true")
@@ -2556,6 +2687,123 @@ async def test_schema_hard_delete_and_recreate(registry_async_client: Client) ->
     assert res.status_code == 200
     assert "id" in res.json()
     assert schema_id == res.json()["id"], "after permanent deleted the same schema registered, the same identifier"
+
+    res = await registry_async_client.get(f"subjects/{subject}/versions")
+    assert res.status_code == 200
+
+    # After recreated, subject again registered
+    res = await registry_async_client.get("subjects")
+    assert res.status_code == 200
+    assert subject in res.json()
+
+
+# This test starts with a state that a buggy old Karapace created, but is no longer producible.
+# However Karapace should tolerate and fix the situation
+async def test_schema_recreate_after_odd_hard_delete(
+    kafka_servers: KafkaServers,
+    registry_cluster: RegistryDescription,
+    registry_async_client: Client,
+) -> None:
+    subject = create_subject_name_factory("test_schema_recreate_after_odd_hard_delete")()
+    schema_name = create_schema_name_factory("test_schema_recreate_after_odd_hard_delete")()
+
+    schema = {
+        "type": "record",
+        "name": schema_name,
+        "fields": [
+            {
+                "type": {
+                    "type": "enum",
+                    "name": "enumtest",
+                    "symbols": ["first", "second"],
+                },
+                "name": "faa",
+            }
+        ],
+    }
+
+    producer = KafkaProducer(bootstrap_servers=kafka_servers.bootstrap_servers)
+    message_key = json_encode(
+        {"subject": subject, "version": 1, "magic": 1, "keytype": "SCHEMA"}, sort_keys=False, compact=True, binary=True
+    )
+    import random
+
+    schema_id = random.randint(20000, 30000)
+    message_value = {"deleted": False, "id": schema_id, "subject": subject, "version": 1, "schema": json.dumps(schema)}
+    producer.send(
+        registry_cluster.schemas_topic,
+        key=message_key,
+        value=json_encode(message_value, sort_keys=False, compact=True, binary=True),
+    ).get()
+    # Produce manual hard delete without soft delete first
+    producer.send(registry_cluster.schemas_topic, key=message_key, value=None).get()
+
+    res = await registry_async_client.put("config", json={"compatibility": "BACKWARD"})
+    assert res.status_code == 200
+
+    # Initially no subject registered
+    res = await registry_async_client.get("subjects")
+    assert res.status_code == 200
+    assert subject not in res.json()
+
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions",
+        json={"schema": json.dumps(schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    schema_id = res.json()["id"]
+
+    # Now subject is listed
+    res = await registry_async_client.get("subjects")
+    assert res.status_code == 200
+    assert subject in res.json()
+
+    # Also newly registed schema can be fetched
+    res = await registry_async_client.get(f"subjects/{subject}/versions")
+    assert res.status_code == 200
+
+    # Soft delete whole schema
+    res = await registry_async_client.delete(f"subjects/{subject}")
+    assert res.status_code == 200
+
+    # Recreate with same subject after soft delete
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions",
+        json={"schema": json.dumps(schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    assert schema_id == res.json()["id"], "after soft delete the same schema registered, the same identifier"
+
+    # Soft delete whole schema
+    res = await registry_async_client.delete(f"subjects/{subject}")
+    assert res.status_code == 200
+    # Hard delete whole schema
+    res = await registry_async_client.delete(f"subjects/{subject}?permanent=true")
+    assert res.status_code == 200
+
+    res = await registry_async_client.get(f"subjects/{subject}/versions")
+    assert res.status_code == 404
+    assert res.json()["error_code"] == 40401
+    assert res.json()["message"] == f"Subject '{subject}' not found."
+
+    # Recreate with same subject after hard delete
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions",
+        json={"schema": json.dumps(schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    assert schema_id == res.json()["id"], "after permanent deleted the same schema registered, the same identifier"
+
+    res = await registry_async_client.get(f"subjects/{subject}/versions")
+    assert res.status_code == 200
+
+    # After recreated, subject again registered
+    res = await registry_async_client.get("subjects")
+    assert res.status_code == 200
+    assert subject in res.json()
 
 
 async def test_invalid_schema_should_provide_good_error_messages(registry_async_client: Client) -> None:
