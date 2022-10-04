@@ -7,11 +7,8 @@ from karapace.config import Config
 from karapace.dependency import Dependency
 from karapace.errors import (
     IncompatibleSchema,
-    InvalidReferences,
-    InvalidSchema,
     InvalidVersion,
     ReferenceExistsException,
-    ReferencesNotSupportedException,
     SchemasNotFoundException,
     SchemaTooLargeException,
     SchemaVersionNotSoftDeletedException,
@@ -540,54 +537,9 @@ class KarapaceSchemaRegistry:
         return self.send_kafka_message(key, value)
 
     def resolve_references(self, references: Optional["References"] = None) -> Optional[Dict[str, Dependency]]:
-        if references is None:
-            return None
-        dependencies = dict()
-
-        for r in references.val():
-            subject = r["subject"]
-            version = r["version"]
-            name = r["name"]
-            subject_data = self.schema_reader.subjects.get(subject)
-            if subject_data is not None:
-                schema_data = subject_data["schemas"][version]
-                schema_references, schema_dependencies = self.resolve_schema_references(schema_data)
-            else:
-                raise InvalidReferences
-
-            parsed_schema = ValidatedTypedSchema.parse(
-                schema_type=schema_data["schema"].schema_type,
-                schema_str=schema_data["schema"].schema_str,
-                references=schema_references,
-                dependencies=schema_dependencies,
-            )
-            dependencies[name] = Dependency(name, subject, version, parsed_schema)
-        return dependencies
+        return self.schema_reader.resolve_references(references)
 
     def resolve_schema_references(
         self, schema_data: Optional[dict]
     ) -> Tuple[Optional[References], Optional[Dict[str, Dependency]]]:
-
-        if schema_data is None:
-            raise InvalidSchema
-
-        schema_references = schema_data.get("references")
-        if schema_references is None:
-            return None, None
-
-        schema_type = schema_data.get("schemaType")
-        if schema_type is None:
-            schema = schema_data.get("schema")
-            if schema is None:
-                raise InvalidReferences
-            if isinstance(schema, TypedSchema):
-                schema_type = schema.schema_type
-            else:
-                schema_type = None
-        if schema_type != SchemaType.PROTOBUF:
-            raise ReferencesNotSupportedException
-
-        schema_references = References(schema_type, schema_references)
-        schema_dependencies = self.resolve_references(schema_references)
-
-        return schema_references, schema_dependencies
+        return self.schema_reader.resolve_schema_references(schema_data)
