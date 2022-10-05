@@ -241,7 +241,7 @@ class KarapaceSchemaRegistry:
             if permanent and not subject_schema_data.get("deleted", False):
                 raise SchemaVersionNotSoftDeletedException()
 
-            referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, int(version)), None)
+            referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, int(resolved_version)), None)
             if referenced_by and len(referenced_by) > 0:
                 raise ReferenceExistsException(referenced_by, version)
 
