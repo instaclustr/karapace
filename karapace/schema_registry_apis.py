@@ -1063,10 +1063,6 @@ class KarapaceSchemaRegistryController(KarapaceBase):
                 references=new_schema_references,
                 dependencies=new_schema_dependencies,
             )
-            schema_id = self.get_schema_id_if_exists(subject=subject, schema=new_schema)
-            if schema_id is not None:
-                self.r({"id": schema_id}, content_type)
-
         except (InvalidSchema, InvalidSchemaType) as e:
             self.log.warning("Invalid schema: %r", body["schema"], exc_info=True)
             if isinstance(e.__cause__, (SchemaParseException, json.JSONDecodeError)):
