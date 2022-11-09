@@ -4,22 +4,28 @@ karapace - Kafka schema reader
 Copyright (c) 2019 Aiven Ltd
 See LICENSE for details
 """
+from avro.schema import Schema as AvroSchema
 from contextlib import closing, ExitStack
+from jsonschema.validators import Draft7Validator
 from kafka import KafkaConsumer
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import KafkaConfigurationError, NoBrokersAvailable, NodeNotReadyError, TopicAlreadyExistsError
 from karapace import constants
 from karapace.config import Config
-from karapace.errors import InvalidSchema
+from karapace.dependency import Dependency
+from karapace.errors import InvalidReferences, InvalidSchema
 from karapace.key_format import is_key_in_canonical_format, KeyFormatter, KeyMode
 from karapace.master_coordinator import MasterCoordinator
-from karapace.schema_models import SchemaType, TypedSchema, ValidatedTypedSchema
+from karapace.protobuf.schema import ProtobufSchema
+from karapace.schema_models import parse_protobuf_schema_definition, SchemaType, TypedSchema
+from karapace.schema_references import Reference
 from karapace.statsd import StatsClient
-from karapace.typing import SubjectData
-from karapace.utils import KarapaceKafkaClient
+from karapace.typing import JsonData, SubjectData
+from karapace.utils import KarapaceKafkaClient, reference_key
 from threading import Condition, Event, Lock, Thread
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
+import hashlib
 import json
 import logging
 
@@ -27,6 +33,7 @@ Offset = int
 Subject = str
 Version = int
 Schema = Dict[str, Any]
+Referents = List
 SchemaId = int
 
 # The value `0` is a valid offset and it represents the first message produced
@@ -36,7 +43,6 @@ LOG = logging.getLogger(__name__)
 
 KAFKA_CLIENT_CREATION_TIMEOUT_SECONDS = 2.0
 SCHEMA_TOPIC_CREATION_TIMEOUT_SECONDS = 5.0
-
 
 # Metric names
 METRIC_SCHEMA_TOPIC_RECORDS_PROCESSED_COUNT = "karapace_schema_reader_records_processed"
@@ -137,6 +143,7 @@ class KafkaSchemaReader(Thread):
         self.config = config
         self.subjects: Dict[Subject, SubjectData] = {}
         self.schemas: Dict[int, TypedSchema] = {}
+        self.referenced_by: Dict[str, Referents] = {}
         self.global_schema_id = 0
         self.admin_client: Optional[KafkaAdminClient] = None
         self.topic_replication_factor = self.config["replication_factor"]
@@ -311,6 +318,7 @@ class KafkaSchemaReader(Thread):
                 schema_records_processed_keymode_canonical,
                 schema_records_processed_keymode_deprecated_karapace,
             )
+            self.log_state()
 
     def _report_schema_metrics(
         self,
@@ -375,7 +383,6 @@ class KafkaSchemaReader(Thread):
             if subject not in self.subjects:
                 LOG.info("Adding first version of subject: %r with no schemas", subject)
                 self.subjects[subject] = {"schemas": {}}
-
             if not value:
                 LOG.info("Deleting compatibility config completely for subject: %r", subject)
                 self.subjects[subject].pop("compatibility", None)
@@ -428,6 +435,9 @@ class KafkaSchemaReader(Thread):
         schema_id = value["id"]
         schema_version = value["version"]
         schema_deleted = value.get("deleted", False)
+        schema_references = value.get("references", None)
+        resolved_references: Optional[List[Reference]] = None
+        resolved_dependencies: Optional[Dict[str, Dependency]] = None
 
         try:
             schema_type_parsed = SchemaType(schema_type)
@@ -441,6 +451,8 @@ class KafkaSchemaReader(Thread):
         # won't interfere with the equality. Note: This means it is possible
         # for the REST API to return data that is formatted differently from
         # what is available in the topic.
+        parsed_schema: Optional[Union[Draft7Validator, AvroSchema, ProtobufSchema]] = None
+        resolved_dependencies: Dict[str, Dependency] = None
         if schema_type_parsed in [SchemaType.AVRO, SchemaType.JSONSCHEMA]:
             try:
                 schema_str = json.dumps(json.loads(schema_str), sort_keys=True)
@@ -449,7 +461,18 @@ class KafkaSchemaReader(Thread):
                 return
         elif schema_type_parsed == SchemaType.PROTOBUF:
             try:
-                parsed_schema = ValidatedTypedSchema.parse(SchemaType.PROTOBUF, schema_str)
+                if schema_references:
+                    resolved_references = [
+                        Reference(reference["name"], reference["subject"], reference["version"])
+                        for reference in schema_references
+                    ]
+                    resolved_dependencies = self.resolve_references(resolved_references)
+                parsed_schema = parse_protobuf_schema_definition(
+                    schema_str,
+                    resolved_references,
+                    resolved_dependencies,
+                    validate_references=False,
+                )
                 schema_str = str(parsed_schema)
             except InvalidSchema:
                 LOG.exception("Schema is not valid ProtoBuf definition")
@@ -465,21 +488,36 @@ class KafkaSchemaReader(Thread):
             # dedup schemas to reduce memory pressure
             schema_str = self._hash_to_schema.setdefault(hash(schema_str), schema_str)
 
-            if schema_version in subjects_schemas:
-                LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
-            else:
-                LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
-
             typed_schema = TypedSchema(
                 schema_type=schema_type_parsed,
                 schema_str=schema_str,
+                references=resolved_references,
+                dependencies=resolved_dependencies,
+                schema=parsed_schema,
             )
-            subjects_schemas[schema_version] = {
+            schema = {
                 "schema": typed_schema,
                 "version": schema_version,
                 "id": schema_id,
                 "deleted": schema_deleted,
             }
+            if resolved_references:
+                schema["references"] = resolved_references
+
+            if schema_version in subjects_schemas:
+                LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+            else:
+                LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+
+            subjects_schemas[schema_version] = schema
+            if resolved_references:
+                for ref in resolved_references:
+                    ref_str = reference_key(ref.subject, ref.version)
+                    referents = self.referenced_by.get(ref_str, None)
+                    if referents:
+                        referents.append(schema_id)
+                    else:
+                        self.referenced_by[ref_str] = [schema_id]
 
             self.schemas[schema_id] = typed_schema
             self.global_schema_id = max(self.global_schema_id, schema_id)
@@ -492,6 +530,7 @@ class KafkaSchemaReader(Thread):
         if key["keytype"] == "CONFIG":
             self._handle_msg_config(key, value)
         elif key["keytype"] == "SCHEMA":
+            LOG.error("HANDLING SCHEMA MESSAGE")
             self._handle_msg_schema(key, value)
         elif key["keytype"] == "DELETE_SUBJECT":
             self._handle_msg_delete_subject(key, value)
@@ -532,3 +571,72 @@ class KafkaSchemaReader(Thread):
                 selected_schemas = [schema for schema in selected_schemas if schema.get("deleted", False) is False]
             res_schemas[subject] = selected_schemas
         return res_schemas
+
+    def remove_referenced_by(self, schema_id: SchemaId, references: List[Reference]):
+        for ref in references:
+            key = reference_key(ref.subject, ref.version)
+            if self.referenced_by.get(key, None) and schema_id in self.referenced_by[key]:
+                self.referenced_by[key].remove(schema_id)
+
+    def _resolve_reference(self, reference: Reference) -> Dependency:
+        subject_data = self.subjects.get(reference.subject)
+        if not subject_data:
+            raise InvalidReferences(f"Subject not found {reference.subject}.")
+        schema: TypedSchema = subject_data["schemas"].get(reference.version, {}).get("schema", None)
+        if not schema:
+            raise InvalidReferences(f"No schema in {reference.subject} with version {reference.version}.")
+        if schema.references:
+            schema_dependencies = self.resolve_references(schema.references)
+            if schema.dependencies is None:
+                schema.dependencies = schema_dependencies
+        return Dependency.of(reference, schema)
+
+    def resolve_references(self, references: List[Reference]) -> Dict[str, Dependency]:
+        dependencies: Dict[str, Dependency] = dict()
+        for reference in references:
+            dependencies[reference.name] = self._resolve_reference(reference)
+        return dependencies
+
+    def _build_state_dict(self) -> JsonData:
+        state = {"schemas": [], "subjects": {}}
+        for schema_id, schema in self.schemas.items():
+            if schema.schema_type == SchemaType.AVRO:
+                schema_str = json.dumps(json.loads(schema.schema_str), sort_keys=True)
+            else:
+                schema_str = schema.schema_str
+            schema_hash = hashlib.sha1(schema_str.encode("utf8")).hexdigest()
+            state["schemas"].append(
+                {
+                    "id": schema_id,
+                    "schema_hash": schema_hash,
+                }
+            )
+        for subject, subject_data in self.subjects.items():
+            subject_state = []
+            state["subjects"][subject] = subject_state
+            for _, schema in subject_data.get("schemas", {}).items():
+                schema_id = schema.get("id")
+                version = schema.get("version")
+                if schema.get("schema").schema_type == SchemaType.AVRO:
+                    schema_str = json.dumps(json.loads(schema.get("schema").schema_str), sort_keys=True)
+                else:
+                    schema_str = schema.get("schema").schema_str
+                schema_hash = hashlib.sha1(schema_str.encode("utf8")).hexdigest()
+                references = schema.get("references", None)
+                references_list = None
+                if references:
+                    references_list = [reference.to_dict() for reference in schema["references"]]
+                subject_state.append(
+                    {
+                        "id": schema_id,
+                        "version": version,
+                        "schema_hash": schema_hash,
+                        "references": references_list,
+                        "deleted": schema.get("deleted", False),
+                    }
+                )
+        return json.dumps(state, sort_keys=True, indent=2)
+
+    def log_state(self) -> None:
+        state_str = self._build_state_dict()
+        LOG.log(level=100, msg=state_str)

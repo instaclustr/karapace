@@ -1,3 +1,7 @@
+from karapace.typing import Version
+from typing import List
+
+
 class VersionNotFoundException(Exception):
     pass
 
@@ -15,6 +19,10 @@ class InvalidSchema(Exception):
 
 
 class InvalidSchemaType(Exception):
+    pass
+
+
+class InvalidReferences(Exception):
     pass
 
 
@@ -36,6 +44,13 @@ class SubjectNotFoundException(Exception):
 
 class SubjectNotSoftDeletedException(Exception):
     pass
+
+
+class ReferenceExistsException(Exception):
+    def __init__(self, referenced_by: List, version: Version):
+        super().__init__()
+        self.version = version
+        self.referenced_by = referenced_by
 
 
 class SubjectSoftDeletedException(Exception):

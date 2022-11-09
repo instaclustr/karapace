@@ -3,9 +3,11 @@ from avro.io import BinaryDecoder, BinaryEncoder, DatumReader, DatumWriter
 from google.protobuf.message import DecodeError
 from jsonschema import ValidationError
 from karapace.client import Client
+from karapace.errors import InvalidReferences
 from karapace.protobuf.exception import ProtobufTypeException
 from karapace.protobuf.io import ProtobufDatumReader, ProtobufDatumWriter
 from karapace.schema_models import InvalidSchema, SchemaType, TypedSchema, ValidatedTypedSchema
+from karapace.schema_references import Reference
 from karapace.utils import json_encode
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote
@@ -75,9 +77,14 @@ class SchemaRegistryClient:
         self.client = Client(server_uri=schema_registry_url, server_ca=server_ca, session_auth=session_auth)
         self.base_url = schema_registry_url
 
-    async def post_new_schema(self, subject: str, schema: ValidatedTypedSchema) -> int:
+    async def post_new_schema(
+        self, subject: str, schema: ValidatedTypedSchema, references: Optional[Reference] = None
+    ) -> int:
         if schema.schema_type is SchemaType.PROTOBUF:
-            payload = {"schema": str(schema), "schemaType": schema.schema_type.value}
+            if references:
+                payload = {"schema": str(schema), "schemaType": schema.schema_type.value, "references": references.json()}
+            else:
+                payload = {"schema": str(schema), "schemaType": schema.schema_type.value}
         else:
             payload = {"schema": json_encode(schema.to_dict()), "schemaType": schema.schema_type.value}
         result = await self.client.post(f"subjects/{quote(subject)}/versions", json=payload)
@@ -94,7 +101,9 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(f"Invalid result format: {json_result}")
         try:
             schema_type = SchemaType(json_result.get("schemaType", "AVRO"))
+
             return json_result["id"], ValidatedTypedSchema.parse(schema_type, json_result["schema"])
+
         except InvalidSchema as e:
             raise SchemaRetrievalError(f"Failed to parse schema string from response: {json_result}") from e
 
@@ -107,7 +116,20 @@ class SchemaRegistryClient:
             raise SchemaRetrievalError(f"Invalid result format: {json_result}")
         try:
             schema_type = SchemaType(json_result.get("schemaType", "AVRO"))
+            references = json_result.get("references")
+            validated_references = None
+            if references:
+                validated_references = []
+                for reference in references:
+                    if ["name", "subject", "version"] != sorted(reference.keys()):
+                        raise InvalidReferences()
+                    validated_references.append(
+                        Reference(name=reference["name"], subject=reference["subject"], version=reference["version"])
+                    )
+            if validated_references:
+                return ValidatedTypedSchema.parse(schema_type, json_result["schema"], references=validated_references)
             return ValidatedTypedSchema.parse(schema_type, json_result["schema"])
+
         except InvalidSchema as e:
             raise SchemaRetrievalError(f"Failed to parse schema string from response: {json_result}") from e
 
@@ -160,6 +182,7 @@ class SchemaRegistrySerializer:
 
     async def get_schema_for_subject(self, subject: str) -> TypedSchema:
         assert self.registry_client, "must not call this method after the object is closed."
+
         schema_id, schema = await self.registry_client.get_latest_schema(subject)
         async with self.state_lock:
             schema_ser = schema.__str__()
@@ -177,6 +200,7 @@ class SchemaRegistrySerializer:
         if schema_ser in self.schemas_to_ids:
             return self.schemas_to_ids[schema_ser]
         schema_id = await self.registry_client.post_new_schema(subject, schema_typed)
+
         async with self.state_lock:
             self.schemas_to_ids[schema_ser] = schema_id
             self.ids_to_schemas[schema_id] = schema_typed
