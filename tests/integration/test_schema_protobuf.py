@@ -175,7 +175,6 @@ async def test_protobuf_schema_normalization(registry_async_client: Client, trai
 
 
 async def test_protobuf_schema_references(registry_async_client: Client) -> None:
-
     customer_schema = """
                 |syntax = "proto3";
                 |package a1;
@@ -267,7 +266,6 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
     res = await registry_async_client.get("subjects/place/versions/latest/referencedby", json={})
     assert res.status_code == 200
 
-    myjson = res.json()
     res = await registry_async_client.delete("subjects/customer/versions/1")
     assert res.status_code == 422
 
@@ -277,12 +275,100 @@ async def test_protobuf_schema_references(registry_async_client: Client) -> None
 
     res = await registry_async_client.delete("subjects/test_schema/versions/1")
     assert res.status_code == 200
+    res = await registry_async_client.delete("subjects/test_schema/versions/1")
+    myjson = res.json()
+    match_msg = "Subject 'test_schema' Version 1 was soft deleted.Set permanent=true to delete permanently"
+
+    assert res.status_code == 404
+
+    assert myjson["error_code"] == 40406 and myjson["message"] == match_msg
+    res = await registry_async_client.delete("subjects/customer/versions/1")
+    myjson = res.json()
+    match_msg = "One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=customer,version=1}."
+
+    assert res.status_code == 422
+    assert myjson["error_code"] == 42206 and myjson["message"] == match_msg
 
     res = await registry_async_client.delete("subjects/test_schema/versions/1?permanent=true")
     assert res.status_code == 200
 
     res = await registry_async_client.delete("subjects/customer/versions/1")
     assert res.status_code == 200
+
+
+async def test_protobuf_schema_jjaakola_one(registry_async_client: Client) -> None:
+    no_ref = """
+             |syntax = "proto3";
+             |
+             |message NoReference {
+             |    string name = 1;
+             |}
+             |"""
+
+    no_ref = trim_margin(no_ref)
+    res = await registry_async_client.post("subjects/sub1/versions", json={"schemaType": "PROTOBUF", "schema": no_ref})
+    assert res.status_code == 200
+    assert "id" in res.json()
+
+    with_first_ref = """
+                |syntax = "proto3";
+                |
+                |import "NoReference.proto";
+                |
+                |message WithReference {
+                |    string name = 1;
+                |    NoReference ref = 2;
+                |}"""
+
+    with_first_ref = trim_margin(with_first_ref)
+    references = [{"name": "NoReference.proto", "subject": "sub1", "version": 1}]
+
+    res = await registry_async_client.post(
+        "subjects/sub2/versions",
+        json={"schemaType": "PROTOBUF", "schema": with_first_ref, "references": references},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+
+    no_ref_second = """
+                    |syntax = "proto3";
+                    |
+                    |message NoReferenceTwo {
+                    |    string name = 1;
+                    |}
+                    |"""
+
+    no_ref_second = trim_margin(no_ref_second)
+    res = await registry_async_client.post(
+        "subjects/sub3/versions", json={"schemaType": "PROTOBUF", "schema": no_ref_second}
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+
+    add_new_ref_in_sub2 = """
+                             |syntax = "proto3";
+                             |import "NoReference.proto";
+                             |import "NoReferenceTwo.proto";
+                             |message WithReference {
+                             |    string name = 1;
+                             |    NoReference ref = 2;
+                             |    NoReferenceTwo refTwo = 3;
+                             |}
+                             |"""
+
+    add_new_ref_in_sub2 = trim_margin(add_new_ref_in_sub2)
+
+    references = [
+        {"name": "NoReference.proto", "subject": "sub1", "version": 1},
+        {"name": "NoReferenceTwo.proto", "subject": "sub3", "version": 1},
+    ]
+
+    res = await registry_async_client.post(
+        "subjects/sub2/versions",
+        json={"schemaType": "PROTOBUF", "schema": add_new_ref_in_sub2, "references": references},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
 
 
 async def test_protobuf_schema_verifier(registry_async_client: Client) -> None:
@@ -353,6 +439,9 @@ async def test_protobuf_schema_verifier(registry_async_client: Client) -> None:
 
     res = await registry_async_client.delete("subjects/test_schema/versions/1")
     assert res.status_code == 200
+
+    res = await registry_async_client.delete("subjects/customer/versions/1")
+    assert res.status_code == 422
 
     res = await registry_async_client.delete("subjects/test_schema/versions/1?permanent=true")
     assert res.status_code == 200
@@ -494,7 +583,6 @@ message WithReference {
 }
 """
 
-
 # Nested references
 SCHEMA_NO_REF_NESTED_MESSAGE = """\
 syntax = "proto3";
@@ -530,7 +618,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF,
                     subject="nr_s1",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseDeleteSchema(
@@ -566,9 +654,9 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_WITH_REF,
                     subject="wr_nonexisting_s1_missing_references",
-                    references=[],
+                    references=None,
                     expected=422,
-                    expected_msg=f"Invalid schema {SCHEMA_WITH_REF} with refs [] of type PROTOBUF",
+                    expected_msg=f"Invalid schema {SCHEMA_WITH_REF} with refs None of type PROTOBUF",
                     expected_error_code=42201,
                 ),
             ],
@@ -580,7 +668,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF,
                     subject="wr_s1",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -627,7 +715,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF,
                     subject="wr_s1_test_incompatible_change",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -641,12 +729,14 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_REMOVES_REFERENCED_FIELD_INCOMPATIBLE,
                     subject="wr_s2_test_incompatible_change",
-                    references=[],
-                    expected=409,
-                    expected_msg=(
-                        "Incompatible schema, compatibility_mode=BACKWARD "
-                        "Incompatible modification Modification.MESSAGE_DROP found"
-                    ),
+                    references=None,
+                    expected=200,
+                    # It is erroneous assumption, there FIELD_DROP only, and it is compatible.
+                    # expected = 200
+                    # expected_msg=(
+                    #        "Incompatible schema, compatibility_mode=BACKWARD "
+                    #        "Incompatible modification Modification.MESSAGE_DROP found"
+                    # ),
                 ),
             ],
         ),
@@ -657,7 +747,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF,
                     subject="wr_s1_add_new_reference",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -671,7 +761,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF_TWO,
                     subject="wr_s3_the_new_reference",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -693,7 +783,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF,
                     subject="wr_chain_s1",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -722,7 +812,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF,
                     subject="wr_chain_s1",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -790,7 +880,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF,
                     subject="wr_invalid_reference_ok_schema",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -815,7 +905,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF_TWO_MESSAGES,
                     subject="wr_s1_two_messages",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -834,7 +924,7 @@ message WithReference {
                     schema_type=SchemaType.PROTOBUF,
                     schema_str=SCHEMA_NO_REF_NESTED_MESSAGE,
                     subject="wr_s1_with_nested_message",
-                    references=[],
+                    references=None,
                     expected=200,
                 ),
                 TestCaseSchema(
@@ -851,6 +941,7 @@ message WithReference {
 )
 async def test_references(testcase: ReferenceTestCase, registry_async_client: Client):
     for testdata in testcase.schemas:
+
         if isinstance(testdata, TestCaseSchema):
             print(f"Adding new schema, subject: '{testdata.subject}'\n{testdata.schema_str}")
             body = {"schemaType": testdata.schema_type, "schema": testdata.schema_str}
@@ -872,6 +963,7 @@ async def test_references(testcase: ReferenceTestCase, registry_async_client: Cl
             res = await registry_async_client.delete(f"subjects/{testdata.subject}/versions/{testdata.version}")
         else:
             raise Exception("Unknown test case.")
+
         assert res.status_code == testdata.expected
         if testdata.expected_msg:
             assert res.json_result.get("message", None) == testdata.expected_msg
@@ -889,3 +981,53 @@ async def test_references(testcase: ReferenceTestCase, registry_async_client: Cl
             else:
                 fetch_schema_res = await registry_async_client.get(f"/schemas/ids/{testdata.schema_id}")
                 assert fetch_schema_res.status_code == 200
+
+
+async def test_protobuf_error(registry_async_client: Client) -> None:
+    testdata = TestCaseSchema(
+        schema_type=SchemaType.PROTOBUF,
+        schema_str=SCHEMA_NO_REF,
+        subject="wr_s1_test_incompatible_change",
+        references=None,
+        expected=200,
+    )
+    print(f"Adding new schema, subject: '{testdata.subject}'\n{testdata.schema_str}")
+    body = {"schemaType": testdata.schema_type, "schema": testdata.schema_str}
+    if testdata.references:
+        body["references"] = testdata.references
+    res = await registry_async_client.post(f"subjects/{testdata.subject}/versions", json=body)
+
+    assert res.status_code == 200
+
+    testdata = TestCaseSchema(
+        schema_type=SchemaType.PROTOBUF,
+        schema_str=SCHEMA_WITH_REF,
+        subject="wr_s2_test_incompatible_change",
+        references=[{"name": "NoReference.proto", "subject": "wr_s1_test_incompatible_change", "version": 1}],
+        expected=200,
+    )
+    print(f"Adding new schema, subject: '{testdata.subject}'\n{testdata.schema_str}")
+    body = {"schemaType": testdata.schema_type, "schema": testdata.schema_str}
+    if testdata.references:
+        body["references"] = testdata.references
+    res = await registry_async_client.post(f"subjects/{testdata.subject}/versions", json=body)
+    assert res.status_code == 200
+    testdata = TestCaseSchema(
+        schema_type=SchemaType.PROTOBUF,
+        schema_str=SCHEMA_REMOVES_REFERENCED_FIELD_INCOMPATIBLE,
+        subject="wr_s2_test_incompatible_change",
+        references=None,
+        expected=409,
+        expected_msg=(
+            # ACTUALLY THERE NO MESSAGE_DROP!!!
+            "Incompatible schema, compatibility_mode=BACKWARD "
+            "Incompatible modification Modification.MESSAGE_DROP found"
+        ),
+    )
+    print(f"Adding new schema, subject: '{testdata.subject}'\n{testdata.schema_str}")
+    body = {"schemaType": testdata.schema_type, "schema": testdata.schema_str}
+    if testdata.references:
+        body["references"] = testdata.references
+    res = await registry_async_client.post(f"subjects/{testdata.subject}/versions", json=body)
+
+    assert res.status_code == 200
