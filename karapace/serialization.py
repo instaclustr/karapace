@@ -27,6 +27,10 @@ HEADER_FORMAT = ">bI"
 HEADER_SIZE = 5
 
 
+class DeserializationError(Exception):
+    pass
+
+
 class InvalidMessageHeader(Exception):
     pass
 
