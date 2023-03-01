@@ -1,3 +1,7 @@
+"""
+Copyright (c) 2023 Aiven Ltd
+See LICENSE for details
+"""
 # Ported from square/wire:
 # wire-library/wire-schema/src/commonMain/kotlin/com/squareup/wire/schema/internal/parser/ReservedElement.kt
 from dataclasses import dataclass
@@ -18,8 +22,7 @@ class ReservedElement:
         append_documentation(result, self.documentation)
         result.append("reserved ")
 
-        for index in range(len(self.values)):
-            value = self.values[index]
+        for index, value in enumerate(self.values):
             if index > 0:
                 result.append(", ")
 

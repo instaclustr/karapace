@@ -1,7 +1,7 @@
 """
 karapace - conftest
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from _pytest.fixtures import SubRequest
@@ -91,6 +91,7 @@ def fixture_kafka_description(request: SubRequest) -> KafkaDescription:
 
     return KafkaDescription(
         version=kafka_version,
+        kafka_tgz=RUNTIME_DIR / kafka_tgz,
         install_dir=kafka_dir,
         download_url=kafka_url,
         protocol_version="2.7",

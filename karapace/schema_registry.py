@@ -1,3 +1,7 @@
+"""
+Copyright (c) 2023 Aiven Ltd
+See LICENSE for details
+"""
 from contextlib import AsyncExitStack, closing
 from kafka import errors as kafka_errors, KafkaProducer
 from kafka.producer.future import FutureRecordMetadata
@@ -18,25 +22,28 @@ from karapace.errors import (
     SubjectSoftDeletedException,
     VersionNotFoundException,
 )
+from karapace.in_memory_database import InMemoryDatabase
 from karapace.key_format import KeyFormatter
 from karapace.master_coordinator import MasterCoordinator
-from karapace.schema_models import SchemaType, TypedSchema, ValidatedTypedSchema
+from karapace.schema_models import ParsedTypedSchema, SchemaType, SchemaVersion, TypedSchema, ValidatedTypedSchema
 from karapace.schema_reader import KafkaSchemaReader
-from karapace.schema_references import Reference
-from karapace.typing import ResolvedVersion, Subject, SubjectData, Version
+from karapace.typing import JsonData, ResolvedVersion, Subject, Version
 from karapace.utils import json_encode, KarapaceKafkaClient, reference_key
-from typing import Dict, List, Optional, Tuple, Union
+from karapace.version import __version__
+from typing import cast, Dict, List, Optional, Tuple, Union
+from karapace.schema_references import Reference
 
 import asyncio
 import logging
 import time
 
 LOG = logging.getLogger(__name__)
+X_REGISTRY_VERSION_HEADER = ("X-Registry-Version", f"karapace-{__version__}".encode())
 
 
-def _resolve_version(subject_data: SubjectData, version: Version) -> ResolvedVersion:
-    max_version = max(subject_data["schemas"])
-    resolved_version: int
+def _resolve_version(schema_versions: Dict[ResolvedVersion, SchemaVersion], version: Version) -> ResolvedVersion:
+    max_version = max(schema_versions)
+    resolved_version: ResolvedVersion
     if isinstance(version, str) and version == "latest":
         return max_version
 
@@ -63,35 +70,35 @@ def validate_version(version: Version) -> Version:
 class KarapaceSchemaRegistry:
     def __init__(self, config: Config) -> None:
         self.config = config
+        host: str = cast(str, self.config["host"])
+        self.x_origin_host_header: Tuple[str, bytes] = ("X-Origin-Host", host.encode("utf8"))
+
         self.producer = self._create_producer()
         self.kafka_timeout = 10
 
         self.mc = MasterCoordinator(config=self.config)
         self.key_formatter = KeyFormatter()
+        self.database = InMemoryDatabase()
         self.schema_reader = KafkaSchemaReader(
-            config=self.config, key_formatter=self.key_formatter, master_coordinator=self.mc
+            config=self.config,
+            key_formatter=self.key_formatter,
+            master_coordinator=self.mc,
+            database=self.database,
         )
 
         self.schema_lock = asyncio.Lock()
         self._master_lock = asyncio.Lock()
 
-    @property
-    def subjects(self) -> Dict[Subject, SubjectData]:
-        return self.schema_reader.subjects
-
     def subjects_list(self, include_deleted: bool = False) -> List[Subject]:
-        return [
-            key
-            for key, val in self.schema_reader.subjects.items()
-            if self.schema_reader.get_schemas(key, include_deleted=include_deleted)
-        ]
+        return self.database.find_subjects(include_deleted=include_deleted)
 
     @property
     def compatibility(self) -> str:
         return str(self.config["compatibility"])
 
-    def get_schemas(self, subject: str, *, include_deleted: bool = False) -> SubjectData:
-        return self.schema_reader.get_schemas(subject=subject, include_deleted=include_deleted)
+    def get_schemas(self, subject: Subject, *, include_deleted: bool = False) -> List[SchemaVersion]:
+        schema_versions = self.database.find_subject_schemas(subject=subject, include_deleted=include_deleted)
+        return list(schema_versions.values())
 
     def start(self) -> None:
         self.mc.start()
@@ -125,81 +132,93 @@ class KarapaceSchemaRegistry:
                 LOG.exception("Unable to create producer, retrying")
                 time.sleep(1)
 
-    async def get_master(self) -> Tuple[bool, Optional[str]]:
+    async def get_master(self, ignore_readiness: bool = False) -> Tuple[bool, Optional[str]]:
+        """Resolve if current node is the primary and the primary node address.
+
+        :param bool ignore_readiness: Ignore waiting to become ready and return
+                                      follower/primary state and primary url.
+        :return (bool, Optional[str]): returns the primary/follower state and primary url
+        """
         async with self._master_lock:
             while True:
                 are_we_master, master_url = self.mc.get_master_info()
                 if are_we_master is None:
                     LOG.info("No master set: %r, url: %r", are_we_master, master_url)
-                elif self.schema_reader.ready is False:
+                elif not ignore_readiness and self.schema_reader.ready is False:
                     LOG.info("Schema reader isn't ready yet: %r", self.schema_reader.ready)
                 else:
                     return are_we_master, master_url
                 await asyncio.sleep(1.0)
 
-    def get_compatibility_mode(self, subject: SubjectData) -> CompatibilityModes:
-        compatibility = subject.get("compatibility", self.config["compatibility"])
+    def get_compatibility_mode(self, subject: Subject) -> CompatibilityModes:
+        compatibility = self.database.get_subject_compatibility(subject=subject)
+        if compatibility is None:
+            # If no subject compatiblity found, use global compatibility
+            compatibility = cast(str, self.config["compatibility"])
         try:
             compatibility_mode = CompatibilityModes(compatibility)
         except ValueError as e:
             raise ValueError(f"Unknown compatibility mode {compatibility}") from e
         return compatibility_mode
 
-    async def schemas_list(self, *, include_deleted: bool, latest_only: bool) -> Dict[Subject, SubjectData]:
+    async def schemas_list(self, *, include_deleted: bool, latest_only: bool) -> Dict[Subject, List[SchemaVersion]]:
         async with self.schema_lock:
-            return self.schema_reader.get_schemas_list(include_deleted=include_deleted, latest_only=latest_only)
+            schemas = self.database.find_schemas(include_deleted=include_deleted, latest_only=latest_only)
+            return schemas
 
     def schemas_get(self, schema_id: int, *, fetch_max_id: bool = False) -> Optional[TypedSchema]:
-        with self.schema_reader.id_lock:
-            try:
-                schema = self.schema_reader.schemas.get(schema_id)
+        try:
+            schema = self.database.find_schema(schema_id=schema_id)
 
-                if schema and fetch_max_id:
-                    schema.max_id = self.schema_reader.global_schema_id
+            if schema and fetch_max_id:
+                schema.max_id = self.database.global_schema_id
 
-                return schema
-            except KeyError:
-                return None
+            return schema
+        except KeyError:
+            return None
 
     async def subject_delete_local(self, subject: str, permanent: bool) -> List[ResolvedVersion]:
         async with self.schema_lock:
-            subject_data_all = self.subject_get(subject, include_deleted=True)
-            subject_schemas_all = subject_data_all["schemas"]
+            schema_versions = self.subject_get(subject, include_deleted=True)
 
             # Subject can be permanently deleted if no schemas or all are soft deleted.
             can_permanent_delete = not bool(
-                [version for version, value in subject_schemas_all.items() if not value.get("deleted", False)]
+                [version_id for version_id, schema_version in schema_versions.items() if not schema_version.deleted]
             )
             if permanent and not can_permanent_delete:
                 raise SubjectNotSoftDeletedException()
 
             # Subject is soft deleted if all schemas in subject have deleted flag
-            already_soft_deleted = len(subject_schemas_all) == len(
-                [version for version, value in subject_schemas_all.items() if value.get("deleted", False)]
+            already_soft_deleted = len(schema_versions) == len(
+                [version_id for version_id, schema_version in schema_versions.items() if schema_version.deleted]
             )
-
             if not permanent and already_soft_deleted:
                 raise SubjectSoftDeletedException()
 
-            latest_schema_id = 0
+            latest_version_id = 0
             version_list = []
             if permanent:
+                version_list = list(schema_versions)
+                latest_version_id = version_list[-1]
 
-                for version, value in list(subject_schemas_all.items()):
-                    referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, version), None)
+                for version_id, schema_version in list(schema_versions.items()):
+                    referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, version_id), None)
                     if referenced_by and len(referenced_by) > 0:
-                        raise ReferenceExistsException(referenced_by, version)
+                        raise ReferenceExistsException(referenced_by, version_id)
 
-                version_list = list(subject_schemas_all)
-                for version, value in list(subject_schemas_all.items()):
-                    schema_id = value.get("id")
-                    references = value.get("references", None)
-                    LOG.info("Permanently deleting subject '%s' version %s (schema id=%s)", subject, version, schema_id)
+                for version_id, schema_version in list(schema_versions.items()):
+                    LOG.info(
+                        "Permanently deleting subject '%s' version %s (schema id=%s)",
+                        subject,
+                        version_id,
+                        schema_version.schema_id,
+                    )
+                    references = schema_version.get("references", None)
                     self.send_schema_message(
                         subject=subject,
                         schema=None,
-                        schema_id=schema_id,
-                        version=version,
+                        schema_id=schema_version.schema_id,
+                        version=version_id,
                         deleted=True,
                         references=references,
                     )
@@ -207,86 +226,79 @@ class KarapaceSchemaRegistry:
                         self.schema_reader.remove_referenced_by(schema_id, references)
             else:
                 try:
-                    subject_data_live = self.subject_get(subject, include_deleted=False)
-                    version_list = list(subject_data_live["schemas"])
+                    schema_versions_live = self.subject_get(subject, include_deleted=False)
+                    version_list = list(schema_versions_live)
                     if version_list:
-                        latest_schema_id = version_list[-1]
+                        latest_version_id = version_list[-1]
                 except SchemasNotFoundException:
                     pass
 
-                referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, latest_schema_id), None)
+                referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, latest_version_id), None)
                 if referenced_by and len(referenced_by) > 0:
-                    raise ReferenceExistsException(referenced_by, latest_schema_id)
-
-                self.send_delete_subject_message(subject, latest_schema_id)
+                    raise ReferenceExistsException(referenced_by, latest_version_id)
+                self.send_delete_subject_message(subject, latest_version_id)
 
             return version_list
 
     async def subject_version_delete_local(self, subject: Subject, version: Version, permanent: bool) -> ResolvedVersion:
         async with self.schema_lock:
-            subject_data = self.subject_get(subject, include_deleted=True)
+            schema_versions = self.subject_get(subject, include_deleted=True)
             if not permanent and isinstance(version, str) and version == "latest":
-                subject_data["schemas"] = {
-                    key: value for (key, value) in subject_data["schemas"].items() if value.get("deleted", False) is False
+                schema_versions = {
+                    version_id: schema_version
+                    for version_id, schema_version in schema_versions.items()
+                    if schema_version.deleted is False
                 }
-            resolved_version = _resolve_version(subject_data=subject_data, version=version)
-            subject_schema_data = subject_data["schemas"].get(resolved_version, None)
+            resolved_version = _resolve_version(schema_versions=schema_versions, version=version)
+            schema_version = schema_versions.get(resolved_version, None)
 
-            if not subject_schema_data:
+            if not schema_version:
                 raise VersionNotFoundException()
-            if subject_schema_data.get("deleted", False) and not permanent:
+            if schema_version.deleted and not permanent:
                 raise SchemaVersionSoftDeletedException()
 
             # Cannot directly hard delete
-            if permanent and not subject_schema_data.get("deleted", False):
+            if permanent and not schema_version.deleted:
                 raise SchemaVersionNotSoftDeletedException()
 
             referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, int(resolved_version)), None)
             if referenced_by and len(referenced_by) > 0:
                 raise ReferenceExistsException(referenced_by, version)
 
-            schema_id = subject_schema_data["id"]
-            schema = subject_schema_data["schema"]
-            references = subject_schema_data.get("references", None)
             self.send_schema_message(
                 subject=subject,
-                schema=None if permanent else schema,
-                schema_id=schema_id,
+                schema=None if permanent else schema_version.schema,
+                schema_id=schema_version.schema_id,
                 version=resolved_version,
                 deleted=True,
-                references=references,
+                references=schema_version.references,
             )
-            if references and len(references) > 0:
-                self.schema_reader.remove_referenced_by(schema_id, references)
+            if schema_version.references and len(schema_version.references) > 0:
+                self.schema_reader.remove_referenced_by(schema_version.schema_id, schema_version.references)
             return resolved_version
 
-    def subject_get(self, subject: Subject, include_deleted: bool = False) -> SubjectData:
-        subject_data = self.schema_reader.subjects.get(subject)
-        if not subject_data:
+    def subject_get(self, subject: Subject, include_deleted: bool = False) -> Dict[ResolvedVersion, SchemaVersion]:
+        subject_found = self.database.find_subject(subject=subject)
+        if not subject_found:
             raise SubjectNotFoundException()
 
-        schemas = self.schema_reader.get_schemas(subject, include_deleted=include_deleted)
+        schemas = self.database.find_subject_schemas(subject=subject, include_deleted=include_deleted)
         if not schemas:
             raise SchemasNotFoundException
+        return schemas
 
-        subject_data = subject_data.copy()
-        subject_data["schemas"] = schemas
-        return subject_data
-
-    async def subject_version_get(self, subject: Subject, version: Version, *, include_deleted: bool = False) -> SubjectData:
+    def subject_version_get(self, subject: Subject, version: Version, *, include_deleted: bool = False) -> JsonData:
         validate_version(version)
-        subject_data = self.subject_get(subject, include_deleted=include_deleted)
-        if not subject_data:
+        schema_versions = self.subject_get(subject, include_deleted=include_deleted)
+        if not schema_versions:
             raise SubjectNotFoundException()
-        schema_data = None
-
-        resolved_version = _resolve_version(subject_data=subject_data, version=version)
-        schema_data = subject_data["schemas"].get(resolved_version, None)
+        resolved_version = _resolve_version(schema_versions=schema_versions, version=version)
+        schema_data: Optional[SchemaVersion] = schema_versions.get(resolved_version, None)
 
         if not schema_data:
             raise VersionNotFoundException()
-        schema_id = schema_data["id"]
-        schema = schema_data["schema"]
+        schema_id = schema_data.schema_id
+        schema = schema_data.schema
 
         ret = {
             "subject": subject,
@@ -299,8 +311,9 @@ class KarapaceSchemaRegistry:
         if schema.schema_type is not SchemaType.AVRO:
             ret["schemaType"] = schema.schema_type
         # Return also compatibility information to compatibility check
-        if subject_data.get("compatibility"):
-            ret["compatibility"] = subject_data.get("compatibility")
+        compatibility = self.database.get_subject_compatibility(subject=subject)
+        if compatibility:
+            ret["compatibility"] = compatibility
         return ret
 
     async def write_new_schema_local(
@@ -315,10 +328,19 @@ class KarapaceSchemaRegistry:
         """
         LOG.info("Writing new schema locally since we're the master")
         async with self.schema_lock:
-            subject_data = self.schema_reader.subjects.get(subject, None)
-            if subject_data is None or not subject_data.get("schemas"):
+            # When waiting for lock an another writer may have written the schema.
+            # Fast path check for resolving.
+            maybe_schema_id = self.database.get_schema_id_if_exists(
+                subject=subject, schema=new_schema, include_deleted=False
+            )
+            if maybe_schema_id is not None:
+                LOG.debug("Schema id %r found from subject+schema cache", maybe_schema_id)
+                return maybe_schema_id
+
+            all_schema_versions = self.database.find_subject_schemas(subject=subject, include_deleted=True)
+            if not all_schema_versions:
                 version = 1
-                schema_id = self.schema_reader.get_schema_id(new_schema)
+                schema_id = self.database.get_schema_id(new_schema)
                 LOG.debug(
                     "Registering new subject: %r, id: %r with version: %r with schema %r, schema_id: %r",
                     subject,
@@ -329,10 +351,14 @@ class KarapaceSchemaRegistry:
                 )
             else:
                 # First check if any of the existing schemas for the subject match
-                schemas = self.schema_reader.get_schemas(subject)
-                if not schemas:  # Previous ones have been deleted by the user.
-                    version = max(self.schema_reader.subjects[subject]["schemas"]) + 1
-                    schema_id = self.schema_reader.get_schema_id(new_schema)
+                live_schema_versions = {
+                    version_id: schema_version
+                    for version_id, schema_version in all_schema_versions.items()
+                    if schema_version.deleted is False
+                }
+                if not live_schema_versions:  # Previous ones have been deleted by the user.
+                    version = self.database.get_next_version(subject=subject)
+                    schema_id = self.database.get_schema_id(new_schema)
                     LOG.debug(
                         "Registering subject: %r, id: %r new version: %r with schema %r, schema_id: %r",
                         subject,
@@ -351,70 +377,55 @@ class KarapaceSchemaRegistry:
                     )
                     return schema_id
 
-                maybe_schema_id = self.schema_reader.get_schema_id_if_exists(subject=subject, schema=new_schema)
-                if maybe_schema_id is not None:
-                    LOG.debug("Schema id %r found from subject+schema cache", maybe_schema_id)
-                    return maybe_schema_id
-
-                compatibility_mode = self.get_compatibility_mode(subject=subject_data)
+                compatibility_mode = self.get_compatibility_mode(subject=subject)
 
                 # Run a compatibility check between on file schema(s) and the one being submitted now
                 # the check is either towards the latest one or against all previous ones in case of
                 # transitive mode
-                schema_versions = sorted(list(schemas))
+                schema_versions = sorted(live_schema_versions)
                 if compatibility_mode.is_transitive():
                     check_against = schema_versions
                 else:
                     check_against = [schema_versions[-1]]
 
                 for old_version in check_against:
-                    old_schema = subject_data["schemas"][old_version]["schema"]
-                    old_schema_references: Optional[List[Reference]] = subject_data["schemas"][old_version][
-                        "schema"
-                    ].references
+                    old_schema = all_schema_versions[old_version].schema
                     old_schema_dependencies: Optional[Dict[str, Dependency]] = None
-
+                    old_schema_references: Optional[List[Reference]] = old_schema.references
                     if old_schema_references:
                         old_schema_dependencies = self.resolve_references(old_schema_references)
-                    validated_old_schema = ValidatedTypedSchema.parse(
+                    parsed_old_schema = ParsedTypedSchema.parse(
                         schema_type=old_schema.schema_type,
                         schema_str=old_schema.schema_str,
-                        references=old_schema_references,
-                        dependencies=old_schema_dependencies,
+                        references = old_schema_references,
+                        dependencies = old_schema_dependencies,
                     )
                     result = check_compatibility(
-                        old_schema=validated_old_schema,
+                        old_schema=parsed_old_schema,
                         new_schema=new_schema,
                         compatibility_mode=compatibility_mode,
                     )
                     if is_incompatible(result):
                         message = set(result.messages).pop() if result.messages else ""
-                        LOG.warning("Incompatible schema: %s", result)
+                        LOG.warning(
+                            "Incompatible schema: %s, incompatibilities: %s", result.compatibility, result.incompatibilities
+                        )
                         raise IncompatibleSchema(
                             f"Incompatible schema, compatibility_mode={compatibility_mode.value} {message}"
                         )
 
                 # We didn't find an existing schema and the schema is compatible so go and create one
-                schema_id = self.schema_reader.get_schema_id(new_schema)
-                version = max(self.schema_reader.subjects[subject]["schemas"]) + 1
-                if new_schema.schema_type is SchemaType.PROTOBUF:
-                    LOG.debug(
-                        "Registering subject: %r, id: %r new version: %r with schema %r, schema_id: %r",
-                        subject,
-                        schema_id,
-                        version,
-                        new_schema.__str__(),
-                        schema_id,
-                    )
-                else:
-                    LOG.debug(
-                        "Registering subject: %r, id: %r new version: %r with schema %r, schema_id: %r",
-                        subject,
-                        schema_id,
-                        version,
-                        new_schema.to_dict(),
-                        schema_id,
-                    )
+                version = self.database.get_next_version(subject=subject)
+                schema_id = self.database.get_schema_id(new_schema)
+
+                LOG.debug(
+                    "Registering subject: %r, id: %r new version: %r with schema %s, schema_id: %r",
+                    subject,
+                    schema_id,
+                    version,
+                    new_schema,
+                    schema_id,
+                )
 
             self.send_schema_message(
                 subject=subject,
@@ -426,15 +437,15 @@ class KarapaceSchemaRegistry:
             )
             return schema_id
 
-    def get_versions(self, schema_id: int, *, include_deleted: bool = False) -> List[SubjectData]:
-        subject_versions = []
-        with self.schema_reader.id_lock:
-            for subject, val in self.schema_reader.subjects.items():
-                if self.schema_reader.get_schemas(subject, include_deleted=include_deleted) and "schemas" in val:
-                    schemas = val["schemas"]
-                    for version, schema in schemas.items():
-                        if int(schema["id"]) == schema_id and (include_deleted or not schema.get("deleted", False)):
-                            subject_versions.append({"subject": subject, "version": int(version)})
+    def get_subject_versions_for_schema(
+        self, schema_id: int, *, include_deleted: bool = False
+    ) -> List[Dict[str, Union[Subject, ResolvedVersion]]]:
+        subject_versions: List[Dict[str, Union[Subject, ResolvedVersion]]] = []
+        schema_versions = self.database.find_schema_versions_by_schema_id(
+            schema_id=schema_id, include_deleted=include_deleted
+        )
+        for schema_version in schema_versions:
+            subject_versions.append({"subject": schema_version.subject, "version": schema_version.version})
         subject_versions = sorted(subject_versions, key=lambda s: (s["subject"], s["version"]))
         return subject_versions
 
@@ -444,7 +455,12 @@ class KarapaceSchemaRegistry:
         if isinstance(value, str):
             value = value.encode("utf8")
 
-        future = self.producer.send(self.config["topic_name"], key=key, value=value)
+        future = self.producer.send(
+            self.config["topic_name"],
+            key=key,
+            value=value,
+            headers=[X_REGISTRY_VERSION_HEADER, self.x_origin_host_header],
+        )
         self.producer.flush(timeout=self.kafka_timeout)
         try:
             msg = future.get(self.kafka_timeout)
@@ -494,7 +510,7 @@ class KarapaceSchemaRegistry:
                 "subject": subject,
                 "version": version,
                 "id": schema_id,
-                "schema": schema.schema_str,
+                "schema": str(schema),
                 "deleted": deleted,
             }
             if references:
@@ -516,7 +532,7 @@ class KarapaceSchemaRegistry:
                 "keytype": "CONFIG",
             }
         )
-        value = '{{"compatibilityLevel":"{}"}}'.format(compatibility_level.value)
+        value = f'{{"compatibilityLevel":"{compatibility_level.value}"}}'
         return self.send_kafka_message(key, value)
 
     def send_config_subject_delete_message(self, subject: Subject) -> FutureRecordMetadata:
@@ -527,7 +543,7 @@ class KarapaceSchemaRegistry:
                 "keytype": "CONFIG",
             }
         )
-        return self.send_kafka_message(key, "".encode("utf-8"))
+        return self.send_kafka_message(key, b"")
 
     def send_delete_subject_message(self, subject: Subject, version: Version) -> FutureRecordMetadata:
         key = self.key_formatter.format_key(
@@ -537,7 +553,7 @@ class KarapaceSchemaRegistry:
                 "keytype": "DELETE_SUBJECT",
             }
         )
-        value = '{{"subject":"{}","version":{}}}'.format(subject, version)
+        value = f'{{"subject":"{subject}","version":{version}}}'
         return self.send_kafka_message(key, value)
 
     def resolve_references(self, references: Optional[List[Reference]]) -> Optional[Dict[str, Dependency]]:

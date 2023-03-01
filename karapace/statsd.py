@@ -5,7 +5,7 @@ Supports telegraf's statsd protocol extension for 'key=value' tags:
 
   https://github.com/influxdata/telegraf/tree/master/plugins/inputs/statsd
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from contextlib import contextmanager
@@ -72,12 +72,12 @@ class StatsClient:
                         tag_value = tag_value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
                     tag_value = tag_value.isoformat()[:19].replace("-", "").replace(":", "") + "Z"
                 elif isinstance(tag_value, datetime.timedelta):
-                    tag_value = "{}s".format(int(tag_value.total_seconds()))
+                    tag_value = f"{int(tag_value.total_seconds())}s"
                 elif not isinstance(tag_value, str):
                     tag_value = str(tag_value)
                 if " " in tag_value or ":" in tag_value or "|" in tag_value or "=" in tag_value:
                     tag_value = "INVALID"
-                parts.insert(1, ",{}={}".format(tag, tag_value).encode("utf-8"))
+                parts.insert(1, f",{tag}={tag_value}".encode())
 
             self._socket.sendto(b"".join(parts), self._dest_addr)
         except Exception:  # pylint: disable=broad-except

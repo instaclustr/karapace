@@ -1,7 +1,7 @@
 """
 karapace - schema tests
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from http import HTTPStatus
@@ -20,10 +20,12 @@ from tests.utils import (
 )
 from typing import List, Tuple
 
+import asyncio
 import json
 import os
 import pytest
 import requests
+import time
 
 baseurl = "http://localhost:8081"
 
@@ -263,12 +265,12 @@ async def test_record_schema_subject_compatibility(registry_async_client: Client
     )
     assert res.status_code == 200
     assert "id" in res.json()
-    result = {"id": 1, "schema": json.dumps(original_schema), "subject": subject, "version": 1}
+    result = {"id": 1, "schema": json_encode(original_schema, compact=True), "subject": subject, "version": 1}
 
     res = await registry_async_client.get(f"subjects/{subject}/versions/1")
     assert res.status_code == 200
     assert res.json() == result
-    result = {"id": 2, "schema": json.dumps(evolved_schema), "subject": subject, "version": 2}
+    result = {"id": 2, "schema": json_encode(evolved_schema, compact=True), "subject": subject, "version": 2}
 
     res = await registry_async_client.get(f"subjects/{subject}/versions/latest")
     assert res.status_code == 200
@@ -701,7 +703,7 @@ async def test_record_schema_compatibility_backward(registry_async_client: Clien
 @pytest.mark.parametrize("trail", ["", "/"])
 async def test_enum_schema_field_add_compatibility(registry_async_client: Client, trail: str) -> None:
     subject_name_factory = create_subject_name_factory(f"test_enum_schema_field_add_compatibility-{trail}")
-    expected_results = [("BACKWARD", 200), ("FORWARD", 200), ("FULL", 200)]
+    expected_results = [("BACKWARD", 200), ("FORWARD", 409), ("FULL", 409)]
     for compatibility, status_code in expected_results:
         subject = subject_name_factory()
         res = await registry_async_client.put(f"config/{subject}{trail}", json={"compatibility": compatibility})
@@ -798,22 +800,25 @@ async def test_map_schema_field_add_compatibility(
 
 async def test_enum_schema(registry_async_client: Client) -> None:
     subject_name_factory = create_subject_name_factory("test_enum_schema")
-    for compatibility in ["BACKWARD", "FORWARD", "FULL"]:
+    expected_results = [("BACKWARD", 200, 409), ("FORWARD", 409, 200), ("FULL", 409, 409)]
+    for compatibility, status_code_add, status_code_remove in expected_results:
         subject = subject_name_factory()
         res = await registry_async_client.put(f"config/{subject}", json={"compatibility": compatibility})
         assert res.status_code == 200
-        schema = {"type": "enum", "name": "testenum", "symbols": ["first"]}
+        schema = {"type": "enum", "name": "testenum", "symbols": ["first", "second"]}
         res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": json.dumps(schema)})
 
         # Add a symbol.
-        schema["symbols"].append("second")
+        schema["symbols"].append("third")
         res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": json.dumps(schema)})
-        assert res.status_code == 200
+        assert res.status_code == status_code_add
 
         # Remove a symbol
         schema["symbols"].pop(1)
+        if res.status_code != 200:
+            schema["symbols"].pop(1)
         res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": json.dumps(schema)})
-        assert res.status_code == 200
+        assert res.status_code == status_code_remove
 
         # Change the name
         schema["name"] = "another"
@@ -822,22 +827,26 @@ async def test_enum_schema(registry_async_client: Client) -> None:
 
         # Inside record
         subject = subject_name_factory()
+        res = await registry_async_client.put(f"config/{subject}", json={"compatibility": compatibility})
+        assert res.status_code == 200
         schema = {
             "type": "record",
             "name": "object",
-            "fields": [{"name": "enumkey", "type": {"type": "enum", "name": "testenum", "symbols": ["first"]}}],
+            "fields": [{"name": "enumkey", "type": {"type": "enum", "name": "testenum", "symbols": ["first", "second"]}}],
         }
         res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": json.dumps(schema)})
 
         # Add a symbol.
-        schema["fields"][0]["type"]["symbols"].append("second")
+        schema["fields"][0]["type"]["symbols"].append("third")
         res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": json.dumps(schema)})
-        assert res.status_code == 200
+        assert res.status_code == status_code_add
 
         # Remove a symbol
         schema["fields"][0]["type"]["symbols"].pop(1)
+        if res.status_code != 200:
+            schema["fields"][0]["type"]["symbols"].pop(1)
         res = await registry_async_client.post(f"subjects/{subject}/versions", json={"schema": json.dumps(schema)})
-        assert res.status_code == 200
+        assert res.status_code == status_code_remove
 
         # Change the name
         schema["fields"][0]["type"]["name"] = "another"
@@ -1174,7 +1183,7 @@ async def test_schema_versions_deleting(registry_async_client: Client, trail: st
     await assert_schema_versions(registry_async_client, trail, schema_id_2, schema_2_versions)
 
     # Deleting one version, the other still found
-    res = await registry_async_client.delete("subjects/{}/versions/{}".format(subject, version_1))
+    res = await registry_async_client.delete(f"subjects/{subject}/versions/{version_1}")
     assert res.status_code == 200
     assert res.json() == version_1
 
@@ -1182,7 +1191,7 @@ async def test_schema_versions_deleting(registry_async_client: Client, trail: st
     await assert_schema_versions(registry_async_client, trail, schema_id_2, schema_2_versions)
 
     # Deleting the subject, the schema version 2 cannot be found anymore
-    res = await registry_async_client.delete("subjects/{}".format(subject))
+    res = await registry_async_client.delete(f"subjects/{subject}")
     assert res.status_code == 200
     assert res.json() == [version_2]
 
@@ -1225,7 +1234,7 @@ async def test_schema_delete_latest_version(registry_async_client: Client, trail
     await assert_schema_versions(registry_async_client, trail, schema_id_2, schema_2_versions)
 
     # Deleting latest version, the other still found
-    res = await registry_async_client.delete("subjects/{}/versions/latest".format(subject))
+    res = await registry_async_client.delete(f"subjects/{subject}/versions/latest")
     assert res.status_code == 200
     assert res.json() == version_2
 
@@ -1233,7 +1242,7 @@ async def test_schema_delete_latest_version(registry_async_client: Client, trail
     await assert_schema_versions(registry_async_client, trail, schema_id_2, [])
 
     # Deleting the latest version, no schemas left
-    res = await registry_async_client.delete("subjects/{}/versions/latest".format(subject))
+    res = await registry_async_client.delete(f"subjects/{subject}/versions/latest")
     assert res.status_code == 200
     assert res.json() == version_1
 
@@ -1279,7 +1288,8 @@ async def test_schema_list_endpoint(registry_async_client: Client, trail: str) -
     assert schema_data.get("id") == schema_id
     assert schema_data.get("subject") == subject
     assert schema_data.get("version") == 1
-    assert schema_data.get("schema") == schema_str
+    expected_schema_str = json_encode({"type": "string", "unique": unique}, compact=True)
+    assert schema_data.get("schema") == expected_schema_str
 
 
 @pytest.mark.parametrize("trail", ["", "/"])
@@ -1911,9 +1921,10 @@ async def test_schema_listing(registry_async_client: Client) -> None:
     assert res.json()[0] == subject_1
 
     res = await registry_async_client.get("subjects/?deleted=true")
-    assert len(res.json()) == 2
-    assert res.json()[0] == subject_1
-    assert res.json()[1] == subject_2
+    result = res.json()
+    assert len(result) == 2
+    assert subject_1 in result
+    assert subject_2 in result
 
 
 @pytest.mark.parametrize("trail", ["", "/"])
@@ -2326,7 +2337,8 @@ async def test_malformed_kafka_message(
         sleep=1,
     )
     res_data = res.json()
-    assert res_data == payload, res_data
+    expected_payload = {"schema": json_encode({"foo": "bar"}, compact=True)}
+    assert res_data == expected_payload, res_data
 
 
 async def test_inner_type_compat_failure(registry_async_client: Client) -> None:
@@ -2882,7 +2894,11 @@ async def test_invalid_schema_should_provide_good_error_messages(registry_async_
         f"subjects/{test_subject}/versions",
         json={"schema": schema_str[:-1]},
     )
+<<<<<<< HEAD
     assert res.json()["message"] == "Expecting ',' delimiter: line 1 column 18 (char 17)"
+=======
+    assert res.json()["message"].startswith("Invalid AVRO schema. Error: ")
+>>>>>>> master
 
     # Unfortunately the AVRO library doesn't provide a good error message, it just raises an TypeError
     schema_str = json.dumps({"type": "enum", "name": "error"})
@@ -2900,10 +2916,216 @@ async def test_invalid_schema_should_provide_good_error_messages(registry_async_
     )
     assert res.json()["message"] == "Enum symbols must be a sequence of strings, but it is <class 'dict'>"
 
-    # This is an upstream bug in the python AVRO library, until the bug is fixed we should at least have a nice error message
-    schema_str = json.dumps({"type": "enum", "name": "error", "symbols": ["A", "B"]})
-    res = await registry_async_client.post(
-        f"subjects/{test_subject}/versions",
-        json={"schema": schema_str},
+
+async def test_schema_non_compliant_namespace_in_existing(
+    kafka_servers: KafkaServers,
+    registry_cluster: RegistryDescription,
+    registry_async_client: Client,
+) -> None:
+    """Test non compliant namespace in existing schema
+    This test starts with a state where existing schemas have invalid names per Avro specification.
+    Schemas that have e.g. a dash character in the are accepted by Avro Java SDK although it does
+    not comply with the Avro specification.
+    Karapace shall read the data and disable validation when parsing existing schemas.
+    """
+
+    subject = create_subject_name_factory("test_schema_non_compliant_name_in_existing")()
+
+    schema = {
+        "type": "record",
+        "namespace": "compliant-namespace-test",
+        "name": "test_schema",
+        "fields": [
+            {
+                "type": "string",
+                "name": "test-field",
+            }
+        ],
+    }
+
+    producer = KafkaProducer(bootstrap_servers=kafka_servers.bootstrap_servers)
+    message_key = json_encode(
+        {"keytype": "SCHEMA", "subject": subject, "version": 1, "magic": 1}, sort_keys=False, compact=True, binary=True
     )
+    message_value = {"deleted": False, "id": 1, "subject": subject, "version": 1, "schema": json.dumps(schema)}
+    producer.send(
+        registry_cluster.schemas_topic,
+        key=message_key,
+        value=json_encode(message_value, sort_keys=False, compact=True, binary=True),
+    ).get()
+
+    evolved_schema = {
+        "type": "record",
+        "namespace": "compliant_namespace_test",
+        "name": "test_schema",
+        "fields": [
+            {
+                "type": "string",
+                "name": "test-field",
+            },
+            {"type": "string", "name": "test-field-2", "default": "default-value"},
+        ],
+    }
+
+    # Wait until the schema is available
+    do_until_time = time.monotonic() + 5
+    while do_until_time > time.monotonic():
+        res = await registry_async_client.get(f"subjects/{subject}/versions/latest")
+        if res.status_code == 200:
+            break
+        await asyncio.sleep(0.5)
+
+    # Compatibility check, is expected to be compatible, namespace is not important.
+    res = await registry_async_client.post(
+        f"compatibility/subjects/{subject}/versions/latest",
+        json={"schema": json.dumps(evolved_schema)},
+    )
+<<<<<<< HEAD
     assert res.json()["message"] == "error is a reserved type name."
+=======
+    assert res.status_code == 200
+
+    # Post evolved new schema
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions",
+        json={"schema": json.dumps(evolved_schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    schema_id = res.json()["id"]
+    assert schema_id == 2
+
+    # Check non-compliant schema is registered
+    res = await registry_async_client.post(
+        f"subjects/{subject}",
+        json={"schema": json.dumps(schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    schema_id = res.json()["id"]
+    assert schema_id == 1
+
+    # Check evolved schema is registered
+    res = await registry_async_client.post(
+        f"subjects/{subject}",
+        json={"schema": json.dumps(evolved_schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    schema_id = res.json()["id"]
+    assert schema_id == 2
+
+
+async def test_schema_non_compliant_name_in_existing(
+    kafka_servers: KafkaServers,
+    registry_cluster: RegistryDescription,
+    registry_async_client: Client,
+) -> None:
+    """Test non compliant name in existing schema
+    This test starts with a state where existing schemas have invalid names per Avro specification.
+    Schemas that have e.g. a dash character in the are accepted by Avro Java SDK although it does
+    not comply with the Avro specification.
+    Karapace shall read the data and disable validation when parsing existing schemas.
+    """
+
+    subject = create_subject_name_factory("test_schema_non_compliant_name_in_existing")()
+
+    schema = {
+        "type": "record",
+        "namespace": "compliant_name_test",
+        "name": "test-schema",
+        "fields": [
+            {
+                "type": "string",
+                "name": "test-field",
+            }
+        ],
+    }
+
+    producer = KafkaProducer(bootstrap_servers=kafka_servers.bootstrap_servers)
+    message_key = json_encode(
+        {"keytype": "SCHEMA", "subject": subject, "version": 1, "magic": 1}, sort_keys=False, compact=True, binary=True
+    )
+    message_value = {"deleted": False, "id": 1, "subject": subject, "version": 1, "schema": json.dumps(schema)}
+    producer.send(
+        registry_cluster.schemas_topic,
+        key=message_key,
+        value=json_encode(message_value, sort_keys=False, compact=True, binary=True),
+    ).get()
+
+    evolved_schema = {
+        "type": "record",
+        "namespace": "compliant_name_test",
+        "name": "test_schema",
+        "fields": [
+            {
+                "type": "string",
+                "name": "test-field",
+            },
+            {"type": "string", "name": "test-field-2", "default": "default-value"},
+        ],
+    }
+
+    # Wait until the schema is available
+    do_until_time = time.monotonic() + 5
+    while do_until_time > time.monotonic():
+        res = await registry_async_client.get(f"subjects/{subject}/versions/latest")
+        if res.status_code == 200:
+            break
+        await asyncio.sleep(0.5)
+
+    # Compatibility check, should not be compatible, name is important.
+    # Test that no parsing error is given as name in the existing schema is non-compliant.
+    res = await registry_async_client.post(
+        f"compatibility/subjects/{subject}/versions/latest",
+        json={"schema": json.dumps(evolved_schema)},
+    )
+    assert res.status_code == 200
+    assert not res.json().get("is_compatible")
+
+    # Post evolved schema, should not be compatible and rejected.
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions",
+        json={"schema": json.dumps(evolved_schema)},
+    )
+    assert res.status_code == 409
+    assert res.json() == {
+        "error_code": 409,
+        "message": "Incompatible schema, compatibility_mode=BACKWARD expected: compliant_name_test.test-schema",
+    }
+
+    # Send compatibility configuration for subject that disabled backwards compatibility.
+    # The name cannot be changed if backward compatibility is required.
+    res = await registry_async_client.put(f"/config/{subject}", json={"compatibility": "NONE"})
+    assert res.status_code == 200
+
+    # Post evolved schema and expectation is gets registered as no compatiblity is enforced.
+    res = await registry_async_client.post(
+        f"subjects/{subject}/versions",
+        json={"schema": json.dumps(evolved_schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    schema_id = res.json()["id"]
+    assert schema_id == 2
+
+    # Check non-compliant schema is registered
+    res = await registry_async_client.post(
+        f"subjects/{subject}",
+        json={"schema": json.dumps(schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    schema_id = res.json()["id"]
+    assert schema_id == 1
+
+    # Check evolved schema is registered
+    res = await registry_async_client.post(
+        f"subjects/{subject}",
+        json={"schema": json.dumps(evolved_schema)},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+    schema_id = res.json()["id"]
+    assert schema_id == 2
+>>>>>>> master

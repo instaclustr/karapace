@@ -1,3 +1,7 @@
+"""
+Copyright (c) 2023 Aiven Ltd
+See LICENSE for details
+"""
 from base64 import b64encode
 from dataclasses import dataclass, field
 from enum import Enum, unique
@@ -5,7 +9,9 @@ from hmac import compare_digest
 from karapace.config import InvalidConfiguration
 from karapace.rapu import JSON_CONTENT_TYPE
 from karapace.statsd import StatsClient
+from karapace.utils import json_decode, json_encode
 from typing import Optional
+from watchfiles import awatch, Change
 
 import aiohttp
 import aiohttp.web
@@ -13,9 +19,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
-import json
 import logging
-import os
 import re
 import secrets
 import sys
@@ -74,6 +78,7 @@ class HTTPAuthorizer:
     def __init__(self, filename: str) -> None:
         self._auth_filename: str = filename
         self._refresh_auth_task: Optional[asyncio.Task] = None
+        self._refresh_auth_awatch_stop_event = asyncio.Event()
         # Once first, can raise if file not valid
         self._load_authfile()
 
@@ -82,34 +87,37 @@ class HTTPAuthorizer:
 
         async def _refresh_authfile() -> None:
             """Reload authfile, but keep old auth data if loading fails"""
-
-            last_loaded = os.path.getmtime(self._auth_filename)
-
             while True:
                 try:
-                    await asyncio.sleep(5)
-                    last_modified = os.path.getmtime(self._auth_filename)
-                    if last_loaded < last_modified:
-                        self._load_authfile()
-                        last_loaded = last_modified
+                    async for changes in awatch(self._auth_filename, stop_event=self._refresh_auth_awatch_stop_event):
+                        try:
+                            self._load_authfile()
+                        except InvalidConfiguration as e:
+                            log.warning("Could not load authentication file: %s", e)
+
+                        if Change.deleted in {change for change, _ in changes}:
+                            # Reset watch after delete event (e.g. file is replaced)
+                            break
                 except asyncio.CancelledError:
                     log.info("Closing schema registry ACL refresh task")
                     return
                 except Exception as ex:  # pylint: disable=broad-except
                     log.exception("Schema registry auth file could not be loaded")
                     stats.unexpected_exception(ex=ex, where="schema_registry_authfile_reloader")
+                    return
 
         self._refresh_auth_task = asyncio.create_task(_refresh_authfile())
 
     async def close(self) -> None:
         if self._refresh_auth_task is not None:
+            self._refresh_auth_awatch_stop_event.set()
             self._refresh_auth_task.cancel()
             self._refresh_auth_task = None
 
     def _load_authfile(self) -> None:
         try:
-            with open(self._auth_filename, "r") as authfile:
-                authdata = json.load(authfile)
+            with open(self._auth_filename) as authfile:
+                authdata = json_decode(authfile)
 
                 users = {
                     user["username"]: User(
@@ -203,7 +211,8 @@ def main() -> int:
     result["algorithm"] = args.algorithm
     result["salt"] = salt
     result["password_hash"] = hash_password(HashAlgorithm(args.algorithm), salt, args.plaintext_password)
-    print(json.dumps(result, indent=4))
+
+    print(json_encode(result, compact=False, indent=4))
     return 0
 
 

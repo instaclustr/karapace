@@ -3,29 +3,28 @@ karapace -
 Custom middleware system on top of `aiohttp` implementing HTTP server and
 client components for use in Aiven's REST applications.
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from accept_types import get_best_match
 from http import HTTPStatus
 from karapace.config import Config, create_server_ssl_context
 from karapace.statsd import StatsClient
-from karapace.utils import json_encode
+from karapace.utils import json_decode, json_encode
 from karapace.version import __version__
-from typing import Dict, NoReturn, Optional, overload, Union
+from typing import Callable, Dict, NoReturn, Optional, overload, Union
 
 import aiohttp
 import aiohttp.web
 import aiohttp.web_exceptions
 import asyncio
-import cgi
+import cgi  # pylint: disable=deprecated-module
 import hashlib
-import json
 import logging
 import re
 import time
 
-SERVER_NAME = "Karapace/{}".format(__version__)
+SERVER_NAME = f"Karapace/{__version__}"
 JSON_CONTENT_TYPE = "application/json"
 
 SCHEMA_CONTENT_TYPES = [
@@ -105,7 +104,7 @@ class HTTPRequest:
         return self._header_cache[upper_cased]
 
     def __repr__(self):
-        return "HTTPRequest(url=%s query=%s method=%s json=%r)" % (self.url, self.query, self.method, self.json)
+        return f"HTTPRequest(url={self.url} query={self.query} method={self.method} json={self.json!r})"
 
 
 class HTTPResponse(Exception):
@@ -159,14 +158,17 @@ def http_error(message, content_type: str, code: HTTPStatus) -> NoReturn:
 
 
 class RestApp:
-    def __init__(self, *, app_name: str, config: Config) -> None:
+    def __init__(
+        self, *, app_name: str, config: Config, not_ready_handler: Optional[Callable[[HTTPRequest], None]] = None
+    ) -> None:
         self.app_name = app_name
         self.config = config
-        self.app_request_metric = "{}_request".format(app_name)
+        self.app_request_metric = f"{app_name}_request"
         self.app = aiohttp.web.Application()
         self.log = logging.getLogger(self.app_name)
         self.stats = StatsClient(config=config)
         self.app.on_cleanup.append(self.close_by_app)
+        self.not_ready_handler = not_ready_handler
 
     async def close_by_app(self, app: aiohttp.web.Application) -> None:  # pylint: disable=unused-argument
         await self.close()
@@ -189,7 +191,7 @@ class RestApp:
             "Server": SERVER_NAME,
         }
 
-    def check_rest_headers(self, request: HTTPRequest) -> dict:  # pylint:disable=inconsistent-return-statements
+    def check_rest_headers(self, request: HTTPRequest) -> dict:
         method = request.method
         default_content = "application/vnd.kafka.json.v2+json"
         default_accept = "*/*"
@@ -281,7 +283,7 @@ class RestApp:
                     _, options = cgi.parse_header(rapu_request.get_header("Content-Type"))
                     charset = options.get("charset", "utf-8")
                     body_string = body.decode(charset)
-                    rapu_request.json = json.loads(body_string)
+                    rapu_request.json = json_decode(body_string)
                 except UnicodeDecodeError:
                     raise HTTPResponse(  # pylint: disable=raise-missing-from
                         body=f"Request body is not valid {charset}", status=HTTPStatus.BAD_REQUEST
@@ -320,6 +322,8 @@ class RestApp:
                 callback_kwargs["user"] = user
 
             try:
+                if self.not_ready_handler is not None:
+                    await self.not_ready_handler(rapu_request)
                 data = await callback(**callback_kwargs)
                 status = HTTPStatus.OK
                 headers = {}
@@ -335,7 +339,7 @@ class RestApp:
             headers.update(self.cors_and_server_headers_for_request(request=rapu_request))
 
             if isinstance(data, (dict, list)):
-                resp_bytes = json_encode(data, binary=True)
+                resp_bytes = json_encode(data, sort_keys=True, binary=True)
             elif isinstance(data, str):
                 if "Content-Type" not in headers:
                     headers["Content-Type"] = "text/plain; charset=utf-8"
@@ -346,7 +350,7 @@ class RestApp:
             # On 204 - NO CONTENT there is no point of calculating cache headers
             if is_success(status):
                 if resp_bytes:
-                    etag = '"{}"'.format(hashlib.md5(resp_bytes).hexdigest())
+                    etag = f'"{hashlib.md5(resp_bytes).hexdigest()}"'
                 else:
                     etag = '""'
                 if_none_match = request.headers.get("if-none-match")

@@ -1,5 +1,7 @@
-from karapace.typing import Version
-from typing import List
+"""
+Copyright (c) 2023 Aiven Ltd
+See LICENSE for details
+"""
 
 
 class VersionNotFoundException(Exception):

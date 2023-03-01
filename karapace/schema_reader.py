@@ -1,43 +1,56 @@
 """
 karapace - Kafka schema reader
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from avro.schema import Schema as AvroSchema
 from contextlib import closing, ExitStack
+
 from jsonschema.validators import Draft7Validator
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, TopicPartition
 from kafka.admin import KafkaAdminClient, NewTopic
-from kafka.errors import KafkaConfigurationError, NoBrokersAvailable, NodeNotReadyError, TopicAlreadyExistsError
+from kafka.errors import (
+    InvalidReplicationFactorError,
+    KafkaConfigurationError,
+    KafkaTimeoutError,
+    NoBrokersAvailable,
+    NodeNotReadyError,
+    TopicAlreadyExistsError,
+)
 from karapace import constants
 from karapace.config import Config
-from karapace.dependency import Dependency
+
+
 from karapace.errors import InvalidReferences, InvalidSchema
+from karapace.in_memory_database import InMemoryDatabase
 from karapace.key_format import is_key_in_canonical_format, KeyFormatter, KeyMode
 from karapace.master_coordinator import MasterCoordinator
-from karapace.protobuf.schema import ProtobufSchema
-from karapace.schema_models import parse_protobuf_schema_definition, SchemaType, TypedSchema
-from karapace.schema_references import Reference
+from karapace.schema_models import parse_protobuf_schema_definition,SchemaType, TypedSchema
 from karapace.statsd import StatsClient
-from karapace.typing import JsonData, SubjectData
-from karapace.utils import KarapaceKafkaClient, reference_key
-from threading import Condition, Event, Lock, Thread
+from karapace.utils import json_decode, JSONDecodeError, KarapaceKafkaClient
+from threading import Condition, Event, Thread
 from typing import Any, Dict, List, Optional, Union
+from karapace.dependency import Dependency
+from karapace.protobuf.schema import ProtobufSchema
+from karapace.schema_references import Reference
 
-import hashlib
-import json
+
 import logging
+import time
+import json
 
 Offset = int
 Subject = str
 Version = int
+
 Schema = Dict[str, Any]
 Referents = List
 SchemaId = int
 
 # The value `0` is a valid offset and it represents the first message produced
 # to a topic, therefore it can not be used.
+OFFSET_UNINITIALIZED = -2
 OFFSET_EMPTY = -1
 LOG = logging.getLogger(__name__)
 
@@ -62,6 +75,7 @@ def _create_consumer_from_config(config: Config) -> KafkaConsumer:
         api_version=(1, 0, 0),
         bootstrap_servers=config["bootstrap_uri"],
         client_id=config["client_id"],
+        fetch_max_wait_ms=50,
         security_protocol=config["security_protocol"],
         ssl_cafile=config["ssl_cafile"],
         ssl_certfile=config["ssl_certfile"],
@@ -135,21 +149,19 @@ class KafkaSchemaReader(Thread):
         self,
         config: Config,
         key_formatter: KeyFormatter,
+        database: InMemoryDatabase,
         master_coordinator: Optional[MasterCoordinator] = None,
     ) -> None:
         Thread.__init__(self, name="schema-reader")
         self.master_coordinator = master_coordinator
         self.timeout_ms = 200
         self.config = config
-        self.subjects: Dict[Subject, SubjectData] = {}
-        self.schemas: Dict[int, TypedSchema] = {}
-        self.referenced_by: Dict[str, Referents] = {}
-        self.global_schema_id = 0
+
+        self.database = database
         self.admin_client: Optional[KafkaAdminClient] = None
         self.topic_replication_factor = self.config["replication_factor"]
         self.consumer: Optional[KafkaConsumer] = None
         self.offset_watcher = OffsetsWatcher()
-        self.id_lock = Lock()
         self.stats = StatsClient(config=config)
 
         # Thread synchronization objects
@@ -163,43 +175,19 @@ class KafkaSchemaReader(Thread):
         # the topic has not been compacted yet, waiting allows this to consume
         # the soft delete message and return the correct data instead of the
         # old stale version that has not been deleted yet.)
-        self.offset = OFFSET_EMPTY
+        self.offset = OFFSET_UNINITIALIZED
         self.ready = False
 
         # This event controls when the Reader should stop running, it will be
         # set by another thread (e.g. `KarapaceSchemaRegistry`)
         self._stop = Event()
 
-        # Content based deduplication of schemas. This is used to reduce memory
-        # usage when the same schema is produce multiple times to the same or
-        # different subjects. The deduplication is based on the schema content
-        # instead of the ids to handle corrupt data (where the ids are equal
-        # but the schema themselves don't match)
-        self._hash_to_schema: Dict[int, TypedSchema] = {}
-        self._hash_to_schema_id_on_subject: Dict[int, SchemaId] = {}
-
         self.key_formatter = key_formatter
 
         # Metrics
         self.processed_canonical_keys_total = 0
         self.processed_deprecated_karapace_keys_total = 0
-
-    def get_schema_id(self, new_schema: TypedSchema) -> int:
-        with self.id_lock:
-            for schema_id, schema in self.schemas.items():
-                if schema == new_schema:
-                    return schema_id
-            self.global_schema_id += 1
-            return self.global_schema_id
-
-    def get_schema_id_if_exists(self, *, subject: Subject, schema: TypedSchema) -> Optional[SchemaId]:
-        return self._hash_to_schema_id_on_subject.get(hash((subject, schema.__str__())), None)
-
-    def _set_schema_id_on_subject(self, *, subject: Subject, schema: TypedSchema, schema_id: SchemaId) -> None:
-        self._hash_to_schema_id_on_subject.setdefault(hash((subject, schema.__str__())), schema_id)
-
-    def _delete_from_schema_id_on_subject(self, *, subject: Subject, schema: TypedSchema) -> None:
-        self._hash_to_schema_id_on_subject.pop(hash((subject, schema.__str__())), None)
+        self.last_check = time.monotonic()
 
     def close(self) -> None:
         LOG.info("Closing schema_reader")
@@ -249,23 +237,76 @@ class KafkaSchemaReader(Thread):
                 except TopicAlreadyExistsError:
                     LOG.warning("[Schema Topic] Already exists %r", schema_topic.name)
                     schema_topic_exists = True
+                except InvalidReplicationFactorError:
+                    LOG.info(
+                        "[Schema Topic] Failed to create topic %r, not enough Kafka brokers ready yet, retrying",
+                        schema_topic.name,
+                    )
+                    self._stop.wait(timeout=SCHEMA_TOPIC_CREATION_TIMEOUT_SECONDS)
                 except:  # pylint: disable=bare-except
                     LOG.exception("[Schema Topic] Failed to create %r, retrying", schema_topic.name)
                     self._stop.wait(timeout=SCHEMA_TOPIC_CREATION_TIMEOUT_SECONDS)
 
             while not self._stop.is_set():
+                if self.offset == OFFSET_UNINITIALIZED:
+                    # Handles also a unusual case of purged schemas topic where starting offset can be > 0
+                    # and no records to process.
+                    self.offset = self._get_beginning_offset()
                 try:
                     self.handle_messages()
                 except Exception as e:  # pylint: disable=broad-except
                     self.stats.unexpected_exception(ex=e, where="schema_reader_loop")
                     LOG.exception("Unexpected exception in schema reader loop")
 
+    def _get_beginning_offset(self) -> int:
+        try:
+            offsets = self.consumer.beginning_offsets([TopicPartition(self.config["topic_name"], 0)])
+            # Offset in the response is the offset for last offset.
+            # Reduce by one for matching on startup.
+            beginning_offset = list(offsets.values())[0] - 1
+            return beginning_offset
+        except KafkaTimeoutError:
+            LOG.exception("Reading begin offsets timed out.")
+        except Exception as e:  # pylint: disable=broad-except
+            self.stats.unexpected_exception(ex=e, where="_get_beginning_offset")
+            LOG.exception("Unexpected exception when reading begin offsets.")
+        return OFFSET_UNINITIALIZED
+
+    def _is_ready(self) -> bool:
+        if self.ready:
+            return True
+        try:
+            offsets = self.consumer.end_offsets([TopicPartition(self.config["topic_name"], 0)])
+        except KafkaTimeoutError:
+            LOG.exception("Reading end offsets timed out.")
+            return False
+        except Exception as e:  # pylint: disable=broad-except
+            self.stats.unexpected_exception(ex=e, where="_is_ready")
+            LOG.exception("Unexpected exception when reading end offsets.")
+            return False
+        # Offset in the response is the offset for the next upcoming message.
+        # Reduce by one for actual highest offset.
+        highest_offset = list(offsets.values())[0] - 1
+        cur_time = time.monotonic()
+        time_from_last_check = cur_time - self.last_check
+        progress_pct = 0 if not highest_offset else round((self.offset / highest_offset) * 100, 2)
+        LOG.info(
+            "Replay progress (%s): %s/%s (%s %%)",
+            round(time_from_last_check, 2),
+            self.offset,
+            highest_offset,
+            progress_pct,
+        )
+        self.last_check = cur_time
+        return self.offset >= highest_offset
+
     def handle_messages(self) -> None:
         assert self.consumer is not None, "Thread must be started"
 
         raw_msgs = self.consumer.poll(timeout_ms=self.timeout_ms)
-        if self.ready is False and not raw_msgs:
-            self.ready = True
+        if self.ready is False:
+            self.ready = self._is_ready()
+
         watch_offsets = False
         if self.master_coordinator is not None:
             are_we_master, _ = self.master_coordinator.get_master_info()
@@ -281,8 +322,8 @@ class KafkaSchemaReader(Thread):
             schema_records_processed_keymode_deprecated_karapace = 0
             for msg in msgs:
                 try:
-                    key = json.loads(msg.key.decode("utf8"))
-                except json.JSONDecodeError:
+                    key = json_decode(msg.key)
+                except JSONDecodeError:
                     LOG.exception("Invalid JSON in msg.key")
                     continue
 
@@ -298,8 +339,8 @@ class KafkaSchemaReader(Thread):
                 value = None
                 if msg.value:
                     try:
-                        value = json.loads(msg.value.decode("utf8"))
-                    except json.JSONDecodeError:
+                        value = json_decode(msg.value)
+                    except JSONDecodeError:
                         LOG.exception("Invalid JSON in msg.value")
                         continue
 
@@ -318,7 +359,6 @@ class KafkaSchemaReader(Thread):
                 schema_records_processed_keymode_canonical,
                 schema_records_processed_keymode_deprecated_karapace,
             )
-            self.log_state()
 
     def _report_schema_metrics(
         self,
@@ -354,21 +394,14 @@ class KafkaSchemaReader(Thread):
                 value=self.processed_deprecated_karapace_keys_total,
                 tags={"keymode": KeyMode.DEPRECATED_KARAPACE},
             )
-
-            self.stats.gauge(metric=METRIC_SCHEMAS_GAUGE, value=len(self.schemas))
-            self.stats.gauge(metric=METRIC_SUBJECTS_GAUGE, value=len(self.subjects))
-            versions = 0
-            soft_deleted_versions = 0
-            for _, subject_data in self.subjects.items():
-                schema_data = subject_data.get("schemas", {})
-                for version in schema_data.values():
-                    if not version.get("deleted", False):
-                        versions += 1
-                    else:
-                        soft_deleted_versions += 1
+            num_schemas = self.database.num_schemas()
+            num_subjects = self.database.num_subjects()
+            self.stats.gauge(metric=METRIC_SCHEMAS_GAUGE, value=num_schemas)
+            self.stats.gauge(metric=METRIC_SUBJECTS_GAUGE, value=num_subjects)
+            live_versions, soft_deleted_versions = self.database.num_schema_versions()
             self.stats.gauge(
                 metric=METRIC_SUBJECT_DATA_SCHEMA_VERSIONS_GAUGE,
-                value=versions,
+                value=live_versions,
                 tags={"state": "live"},
             )
             self.stats.gauge(
@@ -380,15 +413,15 @@ class KafkaSchemaReader(Thread):
     def _handle_msg_config(self, key: dict, value: Optional[dict]) -> None:
         subject = key.get("subject")
         if subject is not None:
-            if subject not in self.subjects:
+            if self.database.find_subject(subject=subject) is None:
                 LOG.info("Adding first version of subject: %r with no schemas", subject)
-                self.subjects[subject] = {"schemas": {}}
+                self.database.insert_subject(subject=subject)
             if not value:
                 LOG.info("Deleting compatibility config completely for subject: %r", subject)
-                self.subjects[subject].pop("compatibility", None)
+                self.database.delete_subject_compatibility(subject=subject)
             else:
                 LOG.info("Setting subject: %r config to: %r, value: %r", subject, value["compatibilityLevel"], value)
-                self.subjects[subject]["compatibility"] = value["compatibilityLevel"]
+                self.database.set_subject_compatibility(subject=subject, compatibility=value["compatibilityLevel"])
         elif value is not None:
             LOG.info("Setting global config to: %r, value: %r", value["compatibilityLevel"], value)
             self.config["compatibility"] = value["compatibilityLevel"]
@@ -399,30 +432,26 @@ class KafkaSchemaReader(Thread):
             return
 
         subject = value["subject"]
-        if subject not in self.subjects:
+        version = value["version"]
+        if self.database.find_subject(subject=subject) is None:
             LOG.error("Subject: %r did not exist, should have", subject)
         else:
             LOG.info("Deleting subject: %r, value: %r", subject, value)
-
-            updated_schemas: Dict[int, Schema] = {}
-            for schema_key, schema in self.subjects[subject]["schemas"].items():
-                updated_schemas[schema_key] = self._delete_schema_below_version(schema, value["version"])
-                self._delete_from_schema_id_on_subject(subject=subject, schema=schema["schema"])
-            self.subjects[value["subject"]]["schemas"] = updated_schemas
+            self.database.delete_subject(subject=subject, version=version)
 
     def _handle_msg_schema_hard_delete(self, key: dict) -> None:
         subject, version = key["subject"], key["version"]
 
-        if subject not in self.subjects:
+        if self.database.find_subject(subject=subject) is None:
             LOG.error("Hard delete: Subject %s did not exist, should have", subject)
-        elif version not in self.subjects[subject]["schemas"]:
+        elif version not in self.database.find_subject_schemas(subject=subject, include_deleted=True):
             LOG.error("Hard delete: Version %d for subject %s did not exist, should have", version, subject)
         else:
             LOG.info("Hard delete: subject: %r version: %r", subject, version)
-            self.subjects[subject]["schemas"].pop(version, None)
-            if not self.subjects[subject]["schemas"]:
+            self.database.delete_subject_schema(subject=subject, version=version)
+            if not self.database.find_subject_schemas(subject=subject, include_deleted=True):
                 LOG.info("Hard delete last version, subject %r is gone", subject)
-                del self.subjects[subject]
+                self.database.delete_subject_hard(subject=subject)
 
     def _handle_msg_schema(self, key: dict, value: Optional[dict]) -> None:
         if not value:
@@ -451,8 +480,9 @@ class KafkaSchemaReader(Thread):
         # won't interfere with the equality. Note: This means it is possible
         # for the REST API to return data that is formatted differently from
         # what is available in the topic.
+
         parsed_schema: Optional[Union[Draft7Validator, AvroSchema, ProtobufSchema]] = None
-        resolved_dependencies: Dict[str, Dependency] = None
+        resolved_dependencies: Optional[Dict[str, Dependency]] = None
         if schema_type_parsed in [SchemaType.AVRO, SchemaType.JSONSCHEMA]:
             try:
                 schema_str = json.dumps(json.loads(schema_str), sort_keys=True)
@@ -478,16 +508,7 @@ class KafkaSchemaReader(Thread):
                 LOG.exception("Schema is not valid ProtoBuf definition")
                 return
 
-        if schema_subject not in self.subjects:
-            LOG.info("Adding first version of subject: %r with no schemas", schema_subject)
-            self.subjects[schema_subject] = {"schemas": {}}
-
-        subjects_schemas = self.subjects[schema_subject]["schemas"]
-
-        with self.id_lock:
-            # dedup schemas to reduce memory pressure
-            schema_str = self._hash_to_schema.setdefault(hash(schema_str), schema_str)
-
+        try:
             typed_schema = TypedSchema(
                 schema_type=schema_type_parsed,
                 schema_str=schema_str,
@@ -495,36 +516,23 @@ class KafkaSchemaReader(Thread):
                 dependencies=resolved_dependencies,
                 schema=parsed_schema,
             )
-            schema = {
-                "schema": typed_schema,
-                "version": schema_version,
-                "id": schema_id,
-                "deleted": schema_deleted,
-            }
-            if resolved_references:
-                schema["references"] = resolved_references
+        except (InvalidSchema, JSONDecodeError):
+            return
 
-            if schema_version in subjects_schemas:
-                LOG.info("Updating entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
-            else:
-                LOG.info("Adding entry subject: %r version: %r id: %r", schema_subject, schema_version, schema_id)
+        self.database.insert_schema_version(
+            subject=schema_subject,
+            schema_id=schema_id,
+            version=schema_version,
+            deleted=schema_deleted,
+            schema=typed_schema,
+            references=resolved_references,
+        )
 
-            subjects_schemas[schema_version] = schema
-            if resolved_references:
-                for ref in resolved_references:
-                    ref_str = reference_key(ref.subject, ref.version)
-                    referents = self.referenced_by.get(ref_str, None)
-                    if referents:
-                        referents.append(schema_id)
-                    else:
-                        self.referenced_by[ref_str] = [schema_id]
-
-            self.schemas[schema_id] = typed_schema
-            self.global_schema_id = max(self.global_schema_id, schema_id)
-            if not schema_deleted:
-                self._set_schema_id_on_subject(subject=schema_subject, schema=typed_schema, schema_id=schema_id)
-            else:
-                self._delete_from_schema_id_on_subject(subject=schema_subject, schema=typed_schema)
+        if resolved_references:
+            for ref in resolved_references:
+                self.database.insert_referenced_by(subject=ref.subject,
+                                                   version=ref.version,
+                                                   schema_id=schema_id)
 
     def handle_msg(self, key: dict, value: Optional[dict]) -> None:
         if key["keytype"] == "CONFIG":
@@ -537,52 +545,14 @@ class KafkaSchemaReader(Thread):
         elif key["keytype"] == "NOOP":  # for spec completeness
             pass
 
-    @staticmethod
-    def _delete_schema_below_version(schema: Schema, version: Version) -> Schema:
-        if schema["version"] <= version:
-            schema["deleted"] = True
-        return schema
-
-    def get_schemas(
-        self,
-        subject: Subject,
-        *,
-        include_deleted: bool = False,
-    ) -> Dict:
-        if subject not in self.subjects:
-            return {}
-        if include_deleted:
-            return self.subjects[subject]["schemas"]
-        non_deleted_schemas = {
-            key: val for key, val in self.subjects[subject]["schemas"].items() if val.get("deleted", False) is False
-        }
-        return non_deleted_schemas
-
-    def get_schemas_list(self, *, include_deleted: bool, latest_only: bool) -> Dict[Subject, SubjectData]:
-        res_schemas = {}
-        for subject, subject_data in self.subjects.items():
-            selected_schemas = []
-            schemas = list(subject_data["schemas"].values())
-            if latest_only:
-                selected_schemas = schemas[-1]
-            else:
-                selected_schemas = schemas
-            if include_deleted:
-                selected_schemas = [schema for schema in selected_schemas if schema.get("deleted", False) is False]
-            res_schemas[subject] = selected_schemas
-        return res_schemas
-
     def remove_referenced_by(self, schema_id: SchemaId, references: List[Reference]):
-        for ref in references:
-            key = reference_key(ref.subject, ref.version)
-            if self.referenced_by.get(key, None) and schema_id in self.referenced_by[key]:
-                self.referenced_by[key].remove(schema_id)
+        self.database.remove_referenced_by(schema_id, references)
 
     def _resolve_reference(self, reference: Reference) -> Dependency:
-        subject_data = self.subjects.get(reference.subject)
+        subject_data = self.database.find_subject_schemas(subject=reference.subject, include_deleted=False)
         if not subject_data:
             raise InvalidReferences(f"Subject not found {reference.subject}.")
-        schema: TypedSchema = subject_data["schemas"].get(reference.version, {}).get("schema", None)
+        schema: TypedSchema = subject_data.get(reference.version, {}).get("schema", None)
         if not schema:
             raise InvalidReferences(f"No schema in {reference.subject} with version {reference.version}.")
         if schema.references:
@@ -596,47 +566,3 @@ class KafkaSchemaReader(Thread):
         for reference in references:
             dependencies[reference.name] = self._resolve_reference(reference)
         return dependencies
-
-    def _build_state_dict(self) -> JsonData:
-        state = {"schemas": [], "subjects": {}}
-        for schema_id, schema in self.schemas.items():
-            if schema.schema_type == SchemaType.AVRO:
-                schema_str = json.dumps(json.loads(schema.schema_str), sort_keys=True)
-            else:
-                schema_str = schema.schema_str
-            schema_hash = hashlib.sha1(schema_str.encode("utf8")).hexdigest()
-            state["schemas"].append(
-                {
-                    "id": schema_id,
-                    "schema_hash": schema_hash,
-                }
-            )
-        for subject, subject_data in self.subjects.items():
-            subject_state = []
-            state["subjects"][subject] = subject_state
-            for _, schema in subject_data.get("schemas", {}).items():
-                schema_id = schema.get("id")
-                version = schema.get("version")
-                if schema.get("schema").schema_type == SchemaType.AVRO:
-                    schema_str = json.dumps(json.loads(schema.get("schema").schema_str), sort_keys=True)
-                else:
-                    schema_str = schema.get("schema").schema_str
-                schema_hash = hashlib.sha1(schema_str.encode("utf8")).hexdigest()
-                references = schema.get("references", None)
-                references_list = None
-                if references:
-                    references_list = [reference.to_dict() for reference in schema["references"]]
-                subject_state.append(
-                    {
-                        "id": schema_id,
-                        "version": version,
-                        "schema_hash": schema_hash,
-                        "references": references_list,
-                        "deleted": schema.get("deleted", False),
-                    }
-                )
-        return json.dumps(state, sort_keys=True, indent=2)
-
-    def log_state(self) -> None:
-        state_str = self._build_state_dict()
-        LOG.log(level=100, msg=state_str)

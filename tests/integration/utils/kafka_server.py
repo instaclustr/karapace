@@ -1,5 +1,5 @@
 """
-Copyright (c) 2022 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from dataclasses import dataclass
@@ -73,10 +73,37 @@ def maybe_download_kafka(kafka_description: KafkaDescription) -> None:
     """If necessary download kafka to run the tests."""
     if not os.path.exists(kafka_description.install_dir):
         log.info("Downloading Kafka '%s'", kafka_description.download_url)
-
         download = requests.get(kafka_description.download_url, stream=True)
-        with tarfile.open(mode="r:gz", fileobj=download.raw) as file:
-            file.extractall(str(kafka_description.install_dir.parent))
+        with open(kafka_description.kafka_tgz, "wb") as fd:
+            for chunk in download.iter_content(chunk_size=None):
+                fd.write(chunk)
+
+    if os.path.exists(kafka_description.install_dir):
+        return
+
+    log.info("Extracting Kafka '%s'", kafka_description.kafka_tgz)
+    with open(kafka_description.kafka_tgz, "rb") as kafkatgz:
+        with tarfile.open(mode="r:gz", fileobj=kafkatgz) as file:
+
+            def is_within_directory(directory, target):
+
+                abs_directory = os.path.abspath(directory)
+                abs_target = os.path.abspath(target)
+
+                prefix = os.path.commonprefix([abs_directory, abs_target])
+
+                return prefix == abs_directory
+
+            def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
+
+                for member in tar.getmembers():
+                    member_path = os.path.join(path, member.name)
+                    if not is_within_directory(path, member_path):
+                        raise Exception("Attempted Path Traversal in Tar File")
+
+                tar.extractall(path, members, numeric_owner=numeric_owner)
+
+            safe_extract(file, str(kafka_description.install_dir.parent))
 
 
 def kafka_java_args(
@@ -89,10 +116,10 @@ def kafka_java_args(
     msg = f"Couldn't find kafka installation at {kafka_description.install_dir} to run integration tests."
     assert kafka_description.install_dir.exists(), msg
     java_args = [
-        "-Xmx{}M".format(heap_mb),
-        "-Xms{}M".format(heap_mb),
-        "-Dkafka.logs.dir={}/logs".format(logs_dir),
-        "-Dlog4j.configuration=file:{}".format(log4j_properties_path),
+        f"-Xmx{heap_mb}M",
+        f"-Xms{heap_mb}M",
+        f"-Dkafka.logs.dir={logs_dir}/logs",
+        f"-Dlog4j.configuration=file:{log4j_properties_path}",
         "-cp",
         str(kafka_description.install_dir / "libs" / "*"),
         "kafka.Kafka",
@@ -165,5 +192,5 @@ def configure_and_start_kafka(
         ),
     )
     env: Dict[bytes, bytes] = {}
-    proc = Popen(kafka_cmd, env=env)
+    proc = Popen(kafka_cmd, env=env)  # pylint: disable=consider-using-with
     return proc

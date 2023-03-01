@@ -17,7 +17,7 @@ from jsonschema import Draft7Validator
 from karapace.compatibility.jsonschema.checks import compatibility as jsonschema_compatibility, incompatible_schema
 from karapace.compatibility.protobuf.checks import check_protobuf_schema_compatibility
 from karapace.protobuf.schema import ProtobufSchema
-from karapace.schema_models import ValidatedTypedSchema
+from karapace.schema_models import ParsedTypedSchema, ValidatedTypedSchema
 from karapace.schema_reader import SchemaType
 from karapace.utils import assert_never
 
@@ -57,14 +57,7 @@ class CompatibilityModes(Enum):
 
 
 def check_avro_compatibility(reader_schema: AvroSchema, writer_schema: AvroSchema) -> SchemaCompatibilityResult:
-    result = AvroChecker().get_compatibility(reader=reader_schema, writer=writer_schema)
-    if (
-        result.compatibility is SchemaCompatibilityType.incompatible
-        and [SchemaIncompatibilityType.missing_enum_symbols] != result.incompatibilities
-    ):
-        return result
-
-    return SchemaCompatibilityResult(SchemaCompatibilityType.compatible)
+    return AvroChecker().get_compatibility(reader=reader_schema, writer=writer_schema)
 
 
 def check_jsonschema_compatibility(reader: Draft7Validator, writer: Draft7Validator) -> SchemaCompatibilityResult:
@@ -76,7 +69,7 @@ def check_protobuf_compatibility(reader: ProtobufSchema, writer: ProtobufSchema)
 
 
 def check_compatibility(
-    old_schema: ValidatedTypedSchema, new_schema: ValidatedTypedSchema, compatibility_mode: CompatibilityModes
+    old_schema: ParsedTypedSchema, new_schema: ValidatedTypedSchema, compatibility_mode: CompatibilityModes
 ) -> SchemaCompatibilityResult:
     """Check that `old_schema` and `new_schema` are compatible under `compatibility_mode`."""
     if compatibility_mode is CompatibilityModes.NONE:

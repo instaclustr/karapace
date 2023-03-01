@@ -1,5 +1,5 @@
 """
-Copyright (c) 2022 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from pathlib import Path
@@ -59,5 +59,5 @@ def configure_and_start_zk(config: ZKConfig, kafka_description: KafkaDescription
             kafka_description,
         )
     )
-    proc = Popen(java_args, env=env)
+    proc = Popen(java_args, env=env)  # pylint: disable=consider-using-with
     return proc

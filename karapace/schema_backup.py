@@ -1,26 +1,28 @@
 """
 karapace - schema backup
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from enum import Enum
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.admin import KafkaAdminClient
 from kafka.errors import NoBrokersAvailable, NodeNotReadyError, TopicAlreadyExistsError
+from kafka.structs import PartitionMetadata
 from karapace import constants
 from karapace.anonymize_schemas import anonymize_avro
 from karapace.config import Config, read_config
 from karapace.key_format import KeyFormatter
 from karapace.schema_reader import new_schema_topic_from_config
 from karapace.typing import JsonData
-from karapace.utils import json_encode, KarapaceKafkaClient, Timeout
-from typing import IO, Iterable, Optional, TextIO, Tuple, Union
+from karapace.utils import json_decode, json_encode, KarapaceKafkaClient, Timeout
+from pathlib import Path
+from tempfile import mkstemp
+from typing import AbstractSet, Callable, IO, Optional, TextIO, Tuple, Union
 
 import argparse
 import base64
 import contextlib
-import json
 import logging
 import os
 import sys
@@ -43,12 +45,138 @@ class BackupError(Exception):
     """Backup Error"""
 
 
+class PartitionCountError(BackupError):
+    pass
+
+
+def __check_partition_count(topic: str, supplier: Callable[[str], AbstractSet[PartitionMetadata]]) -> None:
+    """Checks that the given topic has exactly one partition.
+
+    :param topic: to check.
+    :param supplier: of topic partition metadata.
+    :raises PartitionCountError: if the topic does not have exactly one partition.
+    """
+    partition_count = len(supplier(topic))
+    if partition_count != 1:
+        raise PartitionCountError(
+            f"Topic {topic!r} has {partition_count} partitions, but only topics with exactly 1 partition can be backed "
+            "up. The schemas topic MUST have exactly 1 partition to ensure perfect ordering of schema updates."
+        )
+
+
 @contextlib.contextmanager
-def Writer(filename: Optional[str] = None) -> Iterable[TextIO]:
-    writer = open(filename, "w", encoding="utf8") if filename else sys.stdout
-    yield writer
-    if filename:
-        writer.close()
+def _consumer(config: Config, topic: str) -> KafkaConsumer:
+    """Creates an automatically closing Kafka consumer client.
+
+    :param config: for the client.
+    :param topic: to consume from.
+    :raises PartitionCountError: if the topic does not have exactly one partition.
+    :raises Exception: if client creation fails, concrete exception types are unknown, see Kafka implementation.
+    """
+    consumer = KafkaConsumer(
+        topic,
+        enable_auto_commit=False,
+        bootstrap_servers=config["bootstrap_uri"],
+        client_id=config["client_id"],
+        security_protocol=config["security_protocol"],
+        ssl_cafile=config["ssl_cafile"],
+        ssl_certfile=config["ssl_certfile"],
+        ssl_keyfile=config["ssl_keyfile"],
+        sasl_mechanism=config["sasl_mechanism"],
+        sasl_plain_username=config["sasl_plain_username"],
+        sasl_plain_password=config["sasl_plain_password"],
+        auto_offset_reset="earliest",
+        metadata_max_age_ms=config["metadata_max_age_ms"],
+        kafka_client=KarapaceKafkaClient,
+    )
+    try:
+        __check_partition_count(topic, consumer.partitions_for_topic)
+        yield consumer
+    finally:
+        consumer.close()
+
+
+@contextlib.contextmanager
+def _producer(config: Config, topic: str) -> KafkaProducer:
+    """Creates an automatically closing Kafka producer client.
+
+    :param config: for the client.
+    :param topic: to produce to.
+    :raises PartitionCountError: if the topic does not have exactly one partition.
+    :raises Exception: if client creation fails, concrete exception types are unknown, see Kafka implementation.
+    """
+    producer = KafkaProducer(
+        bootstrap_servers=config["bootstrap_uri"],
+        security_protocol=config["security_protocol"],
+        ssl_cafile=config["ssl_cafile"],
+        ssl_certfile=config["ssl_certfile"],
+        ssl_keyfile=config["ssl_keyfile"],
+        sasl_mechanism=config["sasl_mechanism"],
+        sasl_plain_username=config["sasl_plain_username"],
+        sasl_plain_password=config["sasl_plain_password"],
+        kafka_client=KarapaceKafkaClient,
+    )
+    try:
+        __check_partition_count(topic, producer.partitions_for)
+        yield producer
+    finally:
+        producer.close()
+
+
+@contextlib.contextmanager
+def _writer(file: Union[str, Path], *, overwrite: Optional[bool] = None) -> TextIO:
+    """Opens the given file for writing.
+
+    This function uses a safe temporary file to collect all written data, followed by a final rename. On most systems
+    the final rename is atomic under most conditions, but there are no guarantees. The temporary file is always created
+    next to the given file, to ensure that the temporary file is on the same physical volume as the target file, and
+    avoid issues that might arise when moving data between physical volumes.
+
+    :param file: to open for writing, both the empty string and the conventional single dash ``-`` will yield
+        ``sys.stdout`` instead of actually creating a file for writing.
+    :param overwrite: may be set to ``True`` to overwrite an existing file at the same location.
+    :raises FileExistsError: if ``overwrite`` is not ``True`` and the file already exists, or if the parent directory of
+        the file is not a directory.
+    :raises OSError: if writing fails or if the file already exists and is not actually a file.
+    """
+    if file in ("", "-"):
+        yield sys.stdout
+    else:
+        if not isinstance(file, Path):
+            file = Path(file)
+        dst = file.absolute()
+
+        def check_dst() -> None:
+            nonlocal overwrite, dst
+            if dst.exists():
+                if overwrite is not True:
+                    raise FileExistsError(f"--location already exists at {dst}, use --overwrite to replace the file.")
+                if not dst.is_file():
+                    raise FileExistsError(
+                        f"--location already exists at {dst}, but is not a file and thus cannot be overwritten."
+                    )
+
+        check_dst()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        fd, path = mkstemp(dir=dst.parent, prefix=dst.name)
+        src = Path(path)
+        try:
+            fp = open(fd, "w", encoding="utf8")
+            try:
+                yield fp
+                fp.flush()
+                os.fsync(fd)
+            finally:
+                fp.close()
+            check_dst()
+            # This might still fail despite all checks, because there is a time window in which other processes can make
+            # changes to the filesystem while our program is advancing. However, we have done the best we can.
+            src.replace(dst)
+        finally:
+            try:
+                src.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _check_backup_file_version(fp: IO) -> BackupVersion:
@@ -67,8 +195,6 @@ class SchemaBackup:
         self.config = config
         self.backup_location = backup_path
         self.topic_name = topic_option or self.config["topic_name"]
-        self.consumer = None
-        self.producer = None
         self.admin_client = None
         self.timeout_ms = 1000
 
@@ -76,37 +202,6 @@ class SchemaBackup:
         self.key_formatter = None
         if self.topic_name == constants.DEFAULT_SCHEMA_TOPIC or self.config.get("force_key_correction", False):
             self.key_formatter = KeyFormatter()
-
-    def init_consumer(self) -> None:
-        self.consumer = KafkaConsumer(
-            self.topic_name,
-            enable_auto_commit=False,
-            bootstrap_servers=self.config["bootstrap_uri"],
-            client_id=self.config["client_id"],
-            security_protocol=self.config["security_protocol"],
-            ssl_cafile=self.config["ssl_cafile"],
-            ssl_certfile=self.config["ssl_certfile"],
-            ssl_keyfile=self.config["ssl_keyfile"],
-            sasl_mechanism=self.config["sasl_mechanism"],
-            sasl_plain_username=self.config["sasl_plain_username"],
-            sasl_plain_password=self.config["sasl_plain_password"],
-            auto_offset_reset="earliest",
-            metadata_max_age_ms=self.config["metadata_max_age_ms"],
-            kafka_client=KarapaceKafkaClient,
-        )
-
-    def init_producer(self) -> None:
-        self.producer = KafkaProducer(
-            bootstrap_servers=self.config["bootstrap_uri"],
-            security_protocol=self.config["security_protocol"],
-            ssl_cafile=self.config["ssl_cafile"],
-            ssl_certfile=self.config["ssl_certfile"],
-            ssl_keyfile=self.config["ssl_keyfile"],
-            sasl_mechanism=self.config["sasl_mechanism"],
-            sasl_plain_username=self.config["sasl_plain_username"],
-            sasl_plain_password=self.config["sasl_plain_password"],
-            kafka_client=KarapaceKafkaClient,
-        )
 
     def init_admin_client(self) -> None:
         start_time = time.monotonic()
@@ -140,7 +235,6 @@ class SchemaBackup:
             return
 
         self.init_admin_client()
-
         start_time = time.monotonic()
         wait_time = constants.MINUTE
         while True:
@@ -164,12 +258,6 @@ class SchemaBackup:
 
     def close(self) -> None:
         LOG.info("Closing schema backup reader")
-        if self.consumer:
-            self.consumer.close()
-            self.consumer = None
-        if self.producer:
-            self.producer.close()
-            self.producer = None
         if self.admin_client:
             self.admin_client.close()
             self.admin_client = None
@@ -180,75 +268,70 @@ class SchemaBackup:
 
         self._create_schema_topic_if_needed()
 
-        if not self.producer:
-            self.init_producer()
-        LOG.info("Starting backup restore for topic: %r", self.topic_name)
+        with _producer(self.config, self.topic_name) as producer:
+            LOG.info("Starting backup restore for topic: %r", self.topic_name)
 
-        with open(self.backup_location, mode="r", encoding="utf8") as fp:
-            if _check_backup_file_version(fp) == BackupVersion.V2:
-                self._restore_backup_version_2(fp)
-            else:
-                self._restore_backup_version_1_single_array(fp)
-        self.close()
+            with open(self.backup_location, encoding="utf8") as fp:
+                if _check_backup_file_version(fp) == BackupVersion.V2:
+                    self._restore_backup_version_2(producer, fp)
+                else:
+                    self._restore_backup_version_1_single_array(producer, fp)
+            self.close()
 
-    def _handle_restore_message(self, item: Tuple[str, str]) -> None:
+    def _handle_restore_message(self, producer: KafkaProducer, item: Tuple[str, str]) -> None:
         key = self.encode_key(item[0])
         value = encode_value(item[1])
-        self.producer.send(self.topic_name, key=key, value=value, partition=PARTITION_ZERO)
+        producer.send(self.topic_name, key=key, value=value, partition=PARTITION_ZERO)
         LOG.debug("Sent kafka msg key: %r, value: %r", key, value)
 
-    def _restore_backup_version_1_single_array(self, fp: IO) -> None:
-        values = None
+    def _restore_backup_version_1_single_array(self, producer: KafkaProducer, fp: IO) -> None:
         raw_msg = fp.read()
-        values = json.loads(raw_msg)
+        values = json_decode(raw_msg)
 
         if not values:
             return
 
         for item in values:
-            self._handle_restore_message(item)
+            self._handle_restore_message(producer, item)
 
-    def _restore_backup_version_2(self, fp: IO) -> None:
+    def _restore_backup_version_2(self, producer: KafkaProducer, fp: IO) -> None:
         for line in fp:
-            hex_key, hex_value = line.split("\t")
-            key = base64.b16decode(hex_key).decode("utf8")
-            value = base64.b16decode(hex_value.strip()).decode("utf8")  # strip to remove the linefeed
-            self._handle_restore_message((key, value))
+            hex_key, hex_value = (val.strip() for val in line.split("\t"))  # strip to remove the linefeed
 
-    def export(self, export_func) -> None:
-        if not self.consumer:
-            self.init_consumer()
-        LOG.info("Starting schema backup read for topic: %r", self.topic_name)
+            key = base64.b16decode(hex_key).decode("utf8") if hex_key != "null" else hex_key
+            value = base64.b16decode(hex_value.strip()).decode("utf8") if hex_value != "null" else hex_value
+            self._handle_restore_message(producer, (key, value))
 
-        topic_fully_consumed = False
+    def export(self, export_func, *, overwrite: Optional[bool] = None) -> None:
+        with _writer(self.backup_location, overwrite=overwrite) as fp:
+            with _consumer(self.config, self.topic_name) as consumer:
+                LOG.info("Starting schema backup read for topic: %r", self.topic_name)
 
-        with Writer(self.backup_location) as fp:
-            fp.write(BACKUP_VERSION_2_MARKER)
-            while not topic_fully_consumed:
-                raw_msg = self.consumer.poll(timeout_ms=self.timeout_ms, max_records=1000)
-                topic_fully_consumed = len(raw_msg) == 0
+                topic_fully_consumed = False
 
-                for _, messages in raw_msg.items():
-                    for message in messages:
-                        ser = export_func(key_bytes=message.key, value_bytes=message.value)
-                        if ser:
-                            fp.write(ser)
+                fp.write(BACKUP_VERSION_2_MARKER)
+                while not topic_fully_consumed:
+                    raw_msg = consumer.poll(timeout_ms=self.timeout_ms, max_records=1000)
+                    topic_fully_consumed = len(raw_msg) == 0
 
-        if self.backup_location:
-            LOG.info("Schema export written to %r", self.backup_location)
-        else:
-            LOG.info("Schema export written to stdout")
+                    for _, messages in raw_msg.items():
+                        for message in messages:
+                            ser = export_func(key_bytes=message.key, value_bytes=message.value)
+                            if ser:
+                                fp.write(ser)
+
+                LOG.info("Schema export written to %r", "stdout" if fp is sys.stdout else self.backup_location)
         self.close()
 
-    def encode_key(self, key: Optional[Union[JsonData, str]]) -> bytes:
-        if not key:
-            return b""
+    def encode_key(self, key: Optional[Union[JsonData, str]]) -> Optional[bytes]:
+        if key == "null":
+            return None
         if not self.key_formatter:
             if isinstance(key, str):
                 return key.encode("utf8")
             return json_encode(key, sort_keys=False, binary=True, compact=False)
         if isinstance(key, str):
-            key = json.loads(key)
+            key = json_decode(key)
         return self.key_formatter.format_key(key)
 
 
@@ -257,16 +340,12 @@ def encode_value(value: Union[JsonData, str]) -> Optional[bytes]:
         return None
     if isinstance(value, str):
         return value.encode("utf8")
-    return json_encode(value, sort_keys=False, binary=True)
+    return json_encode(value, compact=True, sort_keys=False, binary=True)
 
 
 def serialize_record(key_bytes: Optional[bytes], value_bytes: Optional[bytes]) -> str:
-    key = b""
-    if key_bytes is not None:
-        key = base64.b16encode(key_bytes).decode("utf8")
-    value = b""
-    if value_bytes is not None:
-        value = base64.b16encode(value_bytes).decode("utf8")
+    key = base64.b16encode(key_bytes).decode("utf8") if key_bytes is not None else "null"
+    value = base64.b16encode(value_bytes).decode("utf8") if value_bytes is not None else "null"
     return f"{key}\t{value}\n"
 
 
@@ -274,20 +353,20 @@ def anonymize_avro_schema_message(key_bytes: bytes, value_bytes: bytes) -> str:
     # Check that the message has key `schema` and type is Avro schema.
     # The Avro schemas may have `schemaType` key, if not present the schema is Avro.
 
-    key = json.loads(key_bytes.decode("utf8"))
-    value = json.loads(value_bytes.decode("utf8"))
+    key = json_decode(key_bytes)
+    value = json_decode(value_bytes)
 
     if value and "schema" in value and value.get("schemaType", "AVRO") == "AVRO":
-        original_schema = json.loads(value.get("schema"))
+        original_schema = json_decode(value.get("schema"))
         anonymized_schema = anonymize_avro.anonymize(original_schema)
         if anonymized_schema:
-            value["schema"] = json_encode(anonymized_schema, sort_keys=False)
+            value["schema"] = json_encode(anonymized_schema, compact=True, sort_keys=False)
     if value and "subject" in value:
         value["subject"] = anonymize_avro.anonymize_name(value["subject"])
     # The schemas topic contain all changes to schema metadata.
     if key.get("subject", None):
         key["subject"] = anonymize_avro.anonymize_name(key["subject"])
-    return serialize_record(json.dumps(key).encode("utf8"), json.dumps(value).encode("utf8"))
+    return serialize_record(json_encode(key, compact=True).encode("utf8"), json_encode(value, compact=True).encode("utf8"))
 
 
 def parse_args():
@@ -303,6 +382,8 @@ def parse_args():
         p.add_argument("--config", help="Configuration file path", required=True)
         p.add_argument("--location", default="", help="File path for the backup file")
         p.add_argument("--topic", help="Kafka topic name to be used", required=False)
+    for p in [parser_get, parser_export_anonymized_avro_schemas]:
+        p.add_argument("--overwrite", action="store_true", help="Overwrite --location even if it exists.")
 
     return parser.parse_args()
 
@@ -316,13 +397,13 @@ def main() -> int:
     sb = SchemaBackup(config, args.location, args.topic)
 
     if args.command == "get":
-        sb.export(serialize_record)
+        sb.export(serialize_record, overwrite=args.overwrite)
         return 0
     if args.command == "restore":
         sb.restore_backup()
         return 0
     if args.command == "export-anonymized-avro-schemas":
-        sb.export(anonymize_avro_schema_message)
+        sb.export(anonymize_avro_schema_message, overwrite=args.overwrite)
         return 0
     return 1
 

@@ -1,5 +1,5 @@
 """
-Copyright (c) 2022 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from dataclasses import dataclass
@@ -24,6 +24,7 @@ class ZKConfig:
 @dataclass(frozen=True)
 class KafkaDescription:
     version: str
+    kafka_tgz: str
     install_dir: Path
     download_url: str
     protocol_version: str

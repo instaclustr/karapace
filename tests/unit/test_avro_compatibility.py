@@ -1,6 +1,9 @@
 """
-    These are duplicates of other test_schema.py tests, but do not make use of the registry client fixture
-    and are here for debugging and speed, and as an initial sanity check
+These are duplicates of other test_schema.py tests, but do not make use of the registry client fixture and are here for
+debugging and speed, and as an initial sanity check
+
+Copyright (c) 2023 Aiven Ltd
+See LICENSE for details
 """
 from avro.compatibility import ReaderWriterCompatibilityChecker, SchemaCompatibilityResult, SchemaCompatibilityType
 from avro.name import Names
@@ -30,14 +33,16 @@ schema7 = parse_avro_schema_definition(
 )
 schema8 = parse_avro_schema_definition(
     '{"type":"record","name":"myrecord","fields":[{"type":"string","name":"f1"},{"type":"string",'
-    '"name":"f2","default":"foo"}]},{"type":"string","name":"f3","default":"bar"}]}'
+    '"name":"f2","default":"foo"}]}'
 )
+
 badDefaultNullString = parse_avro_schema_definition(
     '{"type":"record","name":"myrecord","fields":[{"type":["null","string"],"name":"f1","default":'
     '"null"},{"type":"string","name":"f2","default":"foo"},{"type":"string","name":"f3","default":"bar"}]}'
 )
 invalidEnumDefaultValue = parse_avro_schema_definition(
-    '{"type": "enum", "name": "test_default", "symbols": ["A"], "default": "B"}'
+    '{"type": "enum", "name": "test_default", "symbols": ["A"], "default": "B"}',
+    validate_enum_symbols=False,
 )
 correctEnumDefaultValue = parse_avro_schema_definition(
     '{"type": "enum", "name": "test_default", "symbols": ["A"], "default": "A"}'

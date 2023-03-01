@@ -1,7 +1,7 @@
 """
 karapace - utils
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from aiohttp.web_log import AccessLogger
@@ -11,15 +11,26 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http import HTTPStatus
-from kafka.client_async import BrokerConnection, KafkaClient, MetadataRequest
+from kafka.client_async import BrokerConnection, KafkaClient
+from karapace.typing import JsonData
 from pathlib import Path
-from types import MappingProxyType
-from typing import NoReturn, overload, Union
 
-import json
+from types import MappingProxyType
+from typing import Any, AnyStr, IO, NoReturn, Optional, overload, Union
+
+import importlib
 import kafka.client_async
 import logging
 import time
+
+if importlib.util.find_spec("ujson"):
+    from ujson import JSONDecodeError  # noqa: F401 pylint: disable=unused-import, useless-suppression
+
+    import ujson as json
+else:
+    from json import JSONDecodeError  # noqa: F401 pylint: disable=unused-import, useless-suppression
+
+    import json
 
 NS_BLACKOUT_DURATION_SECONDS = 120
 LOG = logging.getLogger(__name__)
@@ -60,7 +71,7 @@ def reference_key(subject: str, version: int) -> str:
     return hash((subject, version))
 
 
-def default_json_serialization(  # pylint: disable=inconsistent-return-statements
+def default_json_serialization(
     obj: Union[datetime, timedelta, Decimal, MappingProxyType],
 ) -> Union[str, float, dict]:
     if isinstance(obj, datetime):
@@ -72,21 +83,56 @@ def default_json_serialization(  # pylint: disable=inconsistent-return-statement
     if isinstance(obj, MappingProxyType):
         return dict(obj)
 
-    assert_never("Object of type {!r} is not JSON serializable".format(obj.__class__.__name__))
+    assert_never(f"Object of type {obj.__class__.__name__!r} is not JSON serializable")
 
 
-SEPARATORS = (",", ":")
+@overload
+def json_encode(
+    obj: Any,
+    *,
+    binary: bool = False,
+    sort_keys: Optional[bool] = None,
+    compact: Optional[bool] = None,
+    indent: Optional[int] = None,
+) -> str:
+    ...
 
 
-def json_encode(obj, *, sort_keys: bool = True, binary=False, compact=False):
-    separators = SEPARATORS if compact else None
-    res = json.dumps(
-        obj,
-        sort_keys=sort_keys,
-        default=default_json_serialization,
-        separators=separators,
-    )
-    return res.encode("utf-8") if binary else res
+@overload
+def json_encode(
+    obj: Any,
+    *,
+    binary: bool = True,
+    sort_keys: Optional[bool] = None,
+    compact: Optional[bool] = None,
+    indent: Optional[int] = None,
+) -> bytes:
+    ...
+
+
+def json_encode(
+    obj: Any,
+    *,
+    binary: bool = False,
+    sort_keys: Optional[bool] = None,
+    compact: Optional[bool] = None,
+    indent: Optional[int] = None,
+) -> AnyStr:
+    kwargs = {}
+    if indent is not None:
+        kwargs["indent"] = indent
+    if compact is not False and indent is None:
+        kwargs["separators"] = (",", ":")
+    if sort_keys is True:
+        kwargs["sort_keys"] = True
+    result = json.dumps(obj, default=default_json_serialization, **kwargs)
+    return result.encode("utf8") if binary is True else result
+
+
+def json_decode(content: [AnyStr, IO[AnyStr]]) -> JsonData:
+    if isinstance(content, str) or isinstance(content, bytes):  # pylint: disable=consider-merging-isinstance
+        return json.loads(content)
+    return json.load(content)
 
 
 def assert_never(value: NoReturn) -> NoReturn:
@@ -179,61 +225,6 @@ class KarapaceKafkaClient(KafkaClient):
             self.close_invalid_connections()
         except Exception as e:  # pylint: disable=broad-except
             LOG.error("Error closing invalid connections: %r", e)
-
-    def _maybe_refresh_metadata(self, wakeup=False):
-        """
-        Lifted from the parent class with the caveat that the node id will always belong to the bootstrap node,
-        thus ensuring we do not end up in a stale metadata loop
-        """
-        ttl = self.cluster.ttl()
-        wait_for_in_progress_ms = self.config["request_timeout_ms"] if self._metadata_refresh_in_progress else 0
-        metadata_timeout = max(ttl, wait_for_in_progress_ms)
-
-        if metadata_timeout > 0:
-            return metadata_timeout
-        # pylint: disable=protected-access
-        bootstrap_nodes = list(self.cluster._bootstrap_brokers.values())
-        # pylint: enable=protected-access
-        if not bootstrap_nodes:
-            node_id = self.least_loaded_node()
-        else:
-            node_id = bootstrap_nodes[0].nodeId
-        if node_id is None:
-            LOG.debug("Give up sending metadata request since no node is available")
-            return self.config["reconnect_backoff_ms"]
-
-        if self._can_send_request(node_id):
-            topics = list(self._topics)
-            if not topics and self.cluster.is_bootstrap(node_id):
-                topics = list(self.config["bootstrap_topics_filter"])
-
-            if self.cluster.need_all_topic_metadata or not topics:
-                topics = [] if self.config["api_version"] < (0, 10) else None
-            api_version = 0 if self.config["api_version"] < (0, 10) else 1
-            request = MetadataRequest[api_version](topics)
-            LOG.debug("Sending metadata request %s to node %s", request, node_id)
-            future = self.send(node_id, request, wakeup=wakeup)
-            future.add_callback(self.cluster.update_metadata)
-            future.add_errback(self.cluster.failed_update)
-
-            self._metadata_refresh_in_progress = True
-
-            # pylint: disable=unused-argument
-            def refresh_done(val_or_error):
-                self._metadata_refresh_in_progress = False
-
-            # pylint: enable=unused-argument
-
-            future.add_callback(refresh_done)
-            future.add_errback(refresh_done)
-            return self.config["request_timeout_ms"]
-        if self._connecting:
-            return self.config["reconnect_backoff_ms"]
-
-        if self.maybe_connect(node_id, wakeup=wakeup):
-            LOG.debug("Initializing connection to node %s for metadata request", node_id)
-            return self.config["reconnect_backoff_ms"]
-        return float("inf")
 
 
 class KarapaceBrokerConnection(BrokerConnection):

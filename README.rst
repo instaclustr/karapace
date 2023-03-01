@@ -28,7 +28,7 @@ language of the WEB.
 Features
 ========
 
-* Drop in replacement both on pre-existing Schema Registry / Kafka Rest Proxy client and
+* Drop-in replacement both on pre-existing Schema Registry / Kafka Rest Proxy client and
   server-sides
 * Moderate memory consumption
 * Asynchronous architecture based on aiohttp
@@ -307,9 +307,15 @@ Keys to take special care are the ones needed to configure Kafka and advertised_
    * - Parameter
      - Default Value
      - Description
+   * - ``advertised_protocol``
+     - ``http``
+     - The protocol being advertised to other instances of Karapace that are attached to the same Kafka group.
    * - ``advertised_hostname``
      - ``socket.gethostname()``
      - The hostname being advertised to other instances of Karapace that are attached to the same Kafka group.  All nodes within the cluster need to have their ``advertised_hostname``'s set so that they can all reach each other.
+   * - ``advertised_port``
+     - ``None``
+     - The port being advertised to other instances of Karapace that are attached to the same Kafka group.  Fallbacks to ``port`` if not set.
    * - ``bootstrap_uri``
      - ``localhost:9092``
      - The URI to the Kafka service where to store the schemas and to run
@@ -336,8 +342,8 @@ Keys to take special care are the ones needed to configure Kafka and advertised_
      - ``0``
      - Disconnect idle consumers after timeout seconds if not used.  Inactivity leads to consumer leaving consumer group and consumer state.  0 (default) means no auto-disconnect.
    * - ``fetch_min_bytes``
-     - ``-1``
-     - Rest proxy consumers minimum bytes to be fetched per request. ``-1`` means no limit
+     - ``1``
+     - Rest proxy consumers minimum bytes to be fetched per request.
    * - ``group_id``
      - ``schema-registry``
      - The Kafka group name used for selecting a master service to coordinate the storing of Schemas.
@@ -422,6 +428,9 @@ Keys to take special care are the ones needed to configure Kafka and advertised_
    * - ``rest_authorization``
      - ``false``
      - Use REST API's calling authorization credentials to invoke Kafka operations over SASL authentication of ``sasl_bootstrap_uri`` to delegate REST proxy authorization to Kafka.  If false, then use configured common credentials for all Kafka connections of REST proxy operations.
+   * - ``rest_base_uri``
+     - ``None``
+     - Publicly available URI of this instance advertised to the clients using stateful operations such as creating consumers.  If not set, then construct URI using ``advertised_protocol``, ``advertised_hostname``, and ``advertised_port``.
    * - ``metadata_max_age_ms``
      - ``60000``
      - Period of time in milliseconds after Kafka metadata is force refreshed.

@@ -1,12 +1,13 @@
 """
 karapace - test schema backup
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from karapace.client import Client
 from karapace.config import set_config_defaults
 from karapace.schema_backup import anonymize_avro_schema_message, SchemaBackup
+from karapace.utils import json_encode
 from pathlib import Path
 from tests.integration.utils.cluster import RegistryDescription
 from tests.integration.utils.kafka_server import KafkaServers
@@ -41,7 +42,7 @@ AVRO_SCHEMA = {
         },
     ],
 }
-EXPECTED_AVRO_SCHEMA = json.dumps(
+EXPECTED_AVRO_SCHEMA = json_encode(
     {
         "type": "record",
         "namespace": "aa258230180d9c643f761089d7e33b8b52288ed3.ae02f26b082c5f3bc7027f72335dd1186a2cd382",
@@ -53,7 +54,8 @@ EXPECTED_AVRO_SCHEMA = json.dumps(
             },
         ],
     },
-    sort_keys=False,
+    compact=True,
+    sort_keys=True,
 )
 AVRO_DELETE_SUBJECT = {
     "subject": AVRO_SUBJECT,

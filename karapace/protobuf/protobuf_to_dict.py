@@ -3,6 +3,9 @@ This module provide a small Python library for creating dicts from protocol buff
 Module based on code :
 https://github.com/wearefair/protobuf-to-dict
 LICENSE: https://github.com/wearefair/protobuf-to-dict/blob/master/LICENSE
+
+Copyright (c) 2023 Aiven Ltd
+See LICENSE for details
 """
 from dateutil.parser import parse as date_parser
 from google.protobuf.descriptor import FieldDescriptor
@@ -15,8 +18,6 @@ import datetime
 __all__ = ["protobuf_to_dict", "TYPE_CALLABLE_MAP", "dict_to_protobuf", "REVERSE_TYPE_CALLABLE_MAP"]
 
 Timestamp_type_name = "Timestamp"
-
-# pylint: disable=no-member
 
 
 def datetime_to_timestamp(dt):
@@ -194,7 +195,7 @@ def _get_field_mapping(pb, dict_value, strict):
             continue
         if key not in pb.DESCRIPTOR.fields_by_name:
             if strict:
-                raise KeyError("%s does not have a field called %s" % (type(pb), key))
+                raise KeyError(f"{type(pb)} does not have a field called {key}")
             continue
         field_mapping.append((pb.DESCRIPTOR.fields_by_name[key], value, getattr(pb, key, None)))
 
@@ -207,7 +208,7 @@ def _get_field_mapping(pb, dict_value, strict):
         # pylint: disable=protected-access
         if ext_num not in pb._extensions_by_number:
             if strict:
-                raise KeyError("%s does not have a extension with number %s. Perhaps you forgot to import it?" % (pb, key))
+                raise KeyError(f"{pb} does not have a extension with number {key}. Perhaps you forgot to import it?")
             continue
         # pylint: disable=protected-access
 
@@ -304,7 +305,7 @@ def _string_to_enum(field, input_value, strict=False):
     except KeyError:
         if strict:
             # pylint: disable=raise-missing-from
-            raise KeyError("`%s` is not a valid value for field `%s`" % (input_value, field.name))
+            raise KeyError(f"`{input_value}` is not a valid value for field `{field.name}`")
         return _string_to_enum(field, input_value.upper(), strict=True)
     return input_value
 

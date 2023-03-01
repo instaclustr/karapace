@@ -1,5 +1,5 @@
 """
-Copyright (c) 2022 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from contextlib import contextmanager
@@ -79,5 +79,5 @@ def port_is_listening(hostname: str, port: int, ipv6: bool) -> bool:
         s.connect((hostname, port))
         s.close()
         return True
-    except socket.error:
+    except OSError:
         return False

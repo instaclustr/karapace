@@ -1,16 +1,16 @@
 """
 karapace - configuration validation
 
-Copyright (c) 2019 Aiven Ltd
+Copyright (c) 2023 Aiven Ltd
 See LICENSE for details
 """
 from aiohttp.web_log import AccessLogger
 from enum import Enum, unique
 from karapace.constants import DEFAULT_SCHEMA_TOPIC
+from karapace.utils import json_decode, json_encode, JSONDecodeError
 from pathlib import Path
 from typing import Dict, IO, List, Optional, Union
 
-import json
 import logging
 import os
 import socket
@@ -35,7 +35,7 @@ DEFAULTS = {
     "consumer_request_timeout_ms": 11000,
     "consumer_request_max_bytes": 67108864,
     "consumer_idle_disconnect_timeout": 0,
-    "fetch_min_bytes": -1,
+    "fetch_min_bytes": 1,
     "group_id": "schema-registry",
     "host": "127.0.0.1",
     "port": 8081,
@@ -48,6 +48,7 @@ DEFAULTS = {
     "registry_ca": None,
     "registry_authfile": None,
     "rest_authorization": False,
+    "rest_base_uri": None,
     "log_level": "DEBUG",
     "log_format": "%(name)-20s\t%(threadName)s\t%(levelname)-8s\t%(message)s",
     "master_eligibility": True,
@@ -104,6 +105,16 @@ def parse_env_value(value: str) -> Union[str, int, bool]:
 def set_config_defaults(config: Config) -> Config:
     new_config = DEFAULTS.copy()
     new_config.update(config)
+
+    # Fallback to default port if `advertised_port` is not set
+    if new_config["advertised_port"] is None:
+        new_config["advertised_port"] = new_config["port"]
+
+    # Fallback to `advertised_*` constructed URI if not set
+    if new_config["rest_base_uri"] is None:
+        new_config[
+            "rest_base_uri"
+        ] = f"{new_config['advertised_protocol']}://{new_config['advertised_hostname']}:{new_config['advertised_port']}"
 
     # Tag app should always be karapace
     new_config.setdefault("tags", {})
@@ -165,13 +176,13 @@ def validate_config(config: Config) -> None:
 
 
 def write_config(config_path: Path, custom_values: Config) -> None:
-    config_path.write_text(json.dumps(custom_values))
+    config_path.write_text(json_encode(custom_values))
 
 
 def read_config(config_handler: IO) -> Config:
     try:
-        config = json.load(config_handler)
-    except json.JSONDecodeError as ex:
+        config = json_decode(config_handler)
+    except JSONDecodeError as ex:
         raise InvalidConfiguration("Configuration is not a valid JSON") from ex
 
     return set_config_defaults(config)
