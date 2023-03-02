@@ -28,6 +28,7 @@ from karapace.protobuf.schema import ProtobufSchema
 from karapace.schema_models import parse_protobuf_schema_definition, SchemaType, TypedSchema
 from karapace.schema_references import Reference
 from karapace.statsd import StatsClient
+from karapace.typing import ResolvedVersion
 from karapace.utils import json_decode, JSONDecodeError, KarapaceKafkaClient
 from threading import Condition, Event, Thread
 from typing import Any, Dict, List, Optional, Union
@@ -541,6 +542,9 @@ class KafkaSchemaReader(Thread):
 
     def remove_referenced_by(self, schema_id: SchemaId, references: List[Reference]):
         self.database.remove_referenced_by(schema_id, references)
+
+    def get_referenced_by(self, subject: Subject, version: ResolvedVersion) -> Optional[Referents]:
+        return self.database.get_referenced_by(subject, version)
 
     def _resolve_reference(self, reference: Reference) -> Dependency:
         subject_data = self.database.find_subject_schemas(subject=reference.subject, include_deleted=False)

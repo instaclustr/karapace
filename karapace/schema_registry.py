@@ -29,7 +29,7 @@ from karapace.schema_models import ParsedTypedSchema, SchemaType, SchemaVersion,
 from karapace.schema_reader import KafkaSchemaReader
 from karapace.schema_references import Reference
 from karapace.typing import JsonData, ResolvedVersion, Subject, Version
-from karapace.utils import json_encode, KarapaceKafkaClient, reference_key
+from karapace.utils import json_encode, KarapaceKafkaClient
 from karapace.version import __version__
 from typing import cast, Dict, List, Optional, Tuple, Union
 
@@ -199,10 +199,8 @@ class KarapaceSchemaRegistry:
             version_list = []
             if permanent:
                 version_list = list(schema_versions)
-                latest_version_id = version_list[-1]
-
                 for version_id, schema_version in list(schema_versions.items()):
-                    referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, version_id), None)
+                    referenced_by = self.schema_reader.get_referenced_by(subject, schema_version.version)
                     if referenced_by and len(referenced_by) > 0:
                         raise ReferenceExistsException(referenced_by, version_id)
 
@@ -213,17 +211,16 @@ class KarapaceSchemaRegistry:
                         version_id,
                         schema_version.schema_id,
                     )
-                    references = schema_version.get("references", None)
                     self.send_schema_message(
                         subject=subject,
                         schema=None,
                         schema_id=schema_version.schema_id,
                         version=version_id,
                         deleted=True,
-                        references=references,
+                        references=schema_version.references,
                     )
-                    if references and len(references) > 0:
-                        self.schema_reader.remove_referenced_by(schema_id, references)
+                    if schema_version.references and len(schema_version.references) > 0:
+                        self.schema_reader.remove_referenced_by(schema_version.schema_id, schema_version.references)
             else:
                 try:
                     schema_versions_live = self.subject_get(subject, include_deleted=False)
@@ -233,7 +230,7 @@ class KarapaceSchemaRegistry:
                 except SchemasNotFoundException:
                     pass
 
-                referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, latest_version_id), None)
+                referenced_by = self.schema_reader.get_referenced_by(subject, latest_version_id)
                 if referenced_by and len(referenced_by) > 0:
                     raise ReferenceExistsException(referenced_by, latest_version_id)
                 self.send_delete_subject_message(subject, latest_version_id)
@@ -261,7 +258,7 @@ class KarapaceSchemaRegistry:
             if permanent and not schema_version.deleted:
                 raise SchemaVersionNotSoftDeletedException()
 
-            referenced_by = self.schema_reader.referenced_by.get(reference_key(subject, int(resolved_version)), None)
+            referenced_by = self.schema_reader.get_referenced_by(subject, resolved_version)
             if referenced_by and len(referenced_by) > 0:
                 raise ReferenceExistsException(referenced_by, version)
 
@@ -315,6 +312,21 @@ class KarapaceSchemaRegistry:
         if compatibility:
             ret["compatibility"] = compatibility
         return ret
+
+    def subject_version_referencedby_get(self, subject: Subject, version: Version, *, include_deleted: bool = False) -> List:
+        validate_version(version)
+        schema_versions = self.subject_get(subject, include_deleted=include_deleted)
+        if not schema_versions:
+            raise SubjectNotFoundException()
+        resolved_version = _resolve_version(schema_versions=schema_versions, version=version)
+        schema_data: Optional[SchemaVersion] = schema_versions.get(resolved_version, None)
+        if not schema_data:
+            raise VersionNotFoundException()
+        referenced_by = self.schema_reader.get_referenced_by(schema_data.subject, schema_data.version)
+
+        if referenced_by and len(referenced_by) > 0:
+            return list(referenced_by)
+        return []
 
     async def write_new_schema_local(
         self,

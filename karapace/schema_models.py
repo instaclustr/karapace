@@ -343,4 +343,4 @@ class SchemaVersion:
     deleted: bool
     schema_id: SchemaId
     schema: TypedSchema
-    references: List[Reference]
+    references: Optional[List[Reference]]

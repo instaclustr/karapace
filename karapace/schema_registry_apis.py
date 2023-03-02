@@ -32,7 +32,7 @@ from karapace.schema_models import ParsedTypedSchema, SchemaType, SchemaVersion,
 from karapace.schema_references import Reference
 from karapace.schema_registry import KarapaceSchemaRegistry, validate_version
 from karapace.typing import JsonData, ResolvedVersion, SchemaId
-from karapace.utils import JSONDecodeError, reference_key
+from karapace.utils import JSONDecodeError
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
@@ -855,7 +855,7 @@ class KarapaceSchemaRegistryController(KarapaceBase):
         self._check_authorization(user, Operation.Read, f"Subject:{subject}")
 
         try:
-            subject_data = await self.schema_registry.subject_version_get(subject, version)
+            referenced_by = await self.schema_registry.subject_version_referencedby_get(subject, version)
         except (SubjectNotFoundException, SchemasNotFoundException):
             self.r(
                 body={
@@ -877,10 +877,7 @@ class KarapaceSchemaRegistryController(KarapaceBase):
         except InvalidVersion:
             self._invalid_version(content_type, version)
 
-        referenced_by = self.schema_registry.schema_reader.referenced_by.get(
-            reference_key(subject_data["subject"], subject_data["version"]), []
-        )
-        self.r(list(referenced_by), content_type, status=HTTPStatus.OK)
+        self.r(referenced_by, content_type, status=HTTPStatus.OK)
 
     async def subject_versions_list(
         self, content_type: str, *, subject: str, request: HTTPRequest, user: Optional[User] = None

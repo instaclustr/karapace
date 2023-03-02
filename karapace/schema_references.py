@@ -1,9 +1,9 @@
-from karapace.typing import JsonData, Subject, Version
+from karapace.typing import JsonData, ResolvedVersion, Subject
 from typing import Any
 
 
 class Reference:
-    def __init__(self, name: str, subject: Subject, version: Version):
+    def __init__(self, name: str, subject: Subject, version: ResolvedVersion):
         self.name = name
         self.subject = subject
         self.version = version

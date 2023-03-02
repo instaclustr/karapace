@@ -248,7 +248,7 @@ class InMemoryDatabase:
                         soft_deleted_versions += 1
         return (live_versions, soft_deleted_versions)
 
-    def insert_referenced_by(self, *, subject, version, schema_id: SchemaId):
+    def insert_referenced_by(self, *, subject: Subject, version: ResolvedVersion, schema_id: SchemaId) -> None:
         with self.schema_lock_thread:
             ref_str = reference_key(subject, version)
             referents = self.referenced_by.get(ref_str, None)
@@ -257,12 +257,12 @@ class InMemoryDatabase:
             else:
                 self.referenced_by[ref_str] = [schema_id]
 
-    def get_referenced_by(self, subject, version) -> Optional[SchemaId]:
+    def get_referenced_by(self, subject: Subject, version: ResolvedVersion) -> Optional[Referents]:
         with self.schema_lock_thread:
             ref_str = reference_key(subject, version)
             return self.referenced_by.get(ref_str, None)
 
-    def remove_referenced_by(self, schema_id: SchemaId, references: List[Reference]):
+    def remove_referenced_by(self, schema_id: SchemaId, references: List[Reference]) -> None:
         with self.schema_lock_thread:
             for ref in references:
                 key = reference_key(ref.subject, ref.version)

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http import HTTPStatus
 from kafka.client_async import BrokerConnection, KafkaClient
-from karapace.typing import JsonData
+from karapace.typing import JsonData, ResolvedVersion
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, AnyStr, IO, NoReturn, Optional, overload, Union
@@ -66,7 +66,7 @@ def default_json_serialization(obj: MappingProxyType) -> dict:
     ...
 
 
-def reference_key(subject: str, version: int) -> str:
+def reference_key(subject: str, version: ResolvedVersion) -> str:
     return hash((subject, version))
 
 
