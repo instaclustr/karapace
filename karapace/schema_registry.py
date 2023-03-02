@@ -27,11 +27,11 @@ from karapace.key_format import KeyFormatter
 from karapace.master_coordinator import MasterCoordinator
 from karapace.schema_models import ParsedTypedSchema, SchemaType, SchemaVersion, TypedSchema, ValidatedTypedSchema
 from karapace.schema_reader import KafkaSchemaReader
+from karapace.schema_references import Reference
 from karapace.typing import JsonData, ResolvedVersion, Subject, Version
 from karapace.utils import json_encode, KarapaceKafkaClient, reference_key
 from karapace.version import __version__
 from typing import cast, Dict, List, Optional, Tuple, Union
-from karapace.schema_references import Reference
 
 import asyncio
 import logging
@@ -397,8 +397,8 @@ class KarapaceSchemaRegistry:
                     parsed_old_schema = ParsedTypedSchema.parse(
                         schema_type=old_schema.schema_type,
                         schema_str=old_schema.schema_str,
-                        references = old_schema_references,
-                        dependencies = old_schema_dependencies,
+                        references=old_schema_references,
+                        dependencies=old_schema_dependencies,
                     )
                     result = check_compatibility(
                         old_schema=parsed_old_schema,

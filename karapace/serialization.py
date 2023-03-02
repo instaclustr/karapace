@@ -11,8 +11,8 @@ from karapace.errors import InvalidReferences
 from karapace.protobuf.exception import ProtobufTypeException
 from karapace.protobuf.io import ProtobufDatumReader, ProtobufDatumWriter
 from karapace.schema_models import InvalidSchema, ParsedTypedSchema, SchemaType, TypedSchema, ValidatedTypedSchema
-from karapace.utils import json_decode, json_encode
 from karapace.schema_references import Reference
+from karapace.utils import json_decode, json_encode
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote
 

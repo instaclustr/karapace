@@ -29,12 +29,11 @@ from karapace.errors import (
 from karapace.karapace import KarapaceBase
 from karapace.rapu import HTTPRequest, JSON_CONTENT_TYPE, SERVER_NAME
 from karapace.schema_models import ParsedTypedSchema, SchemaType, SchemaVersion, TypedSchema, ValidatedTypedSchema
+from karapace.schema_references import Reference
 from karapace.schema_registry import KarapaceSchemaRegistry, validate_version
 from karapace.typing import JsonData, ResolvedVersion, SchemaId
-from karapace.utils import JSONDecodeError
-from typing import Any, Dict, Optional, Union, List
-from karapace.schema_references import Reference
-from karapace.utils import reference_key
+from karapace.utils import JSONDecodeError, reference_key
+from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
 import async_timeout
@@ -1023,10 +1022,7 @@ class KarapaceSchemaRegistryController(KarapaceBase):
             # When checking if schema is already registered, allow unvalidated schema in as
             # there might be stored schemas that are non-compliant from the past.
             new_schema = ParsedTypedSchema.parse(
-                schema_type=schema_type,
-                schema_str=schema_str,
-                references=references,
-                dependencies=new_schema_dependencies
+                schema_type=schema_type, schema_str=schema_str, references=references, dependencies=new_schema_dependencies
             )
         except InvalidSchema:
             self.log.exception("No proper parser found")

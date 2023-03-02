@@ -9,12 +9,11 @@ from karapace.schema_models import SchemaVersion, TypedSchema
 from karapace.schema_reader import Referents
 from karapace.schema_references import Reference
 from karapace.typing import ResolvedVersion, SchemaId, Subject
+from karapace.utils import reference_key
 from threading import Lock, RLock
 from typing import Dict, List, Optional, Tuple
 
 import logging
-
-from karapace.utils import reference_key
 
 LOG = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ class InMemoryDatabase:
             return self.global_schema_id
 
     def get_schema_id_if_exists(
-            self, *, subject: Subject, schema: TypedSchema, include_deleted: bool  # pylint: disable=unused-argument
+        self, *, subject: Subject, schema: TypedSchema, include_deleted: bool  # pylint: disable=unused-argument
     ) -> Optional[SchemaId]:
         subject_fingerprints = self._hash_to_schema_id_on_subject.get(subject)
         if subject_fingerprints:
@@ -101,8 +100,14 @@ class InMemoryDatabase:
         return max(self.subjects[subject].schemas) + 1
 
     def insert_schema_version(
-            self, *, subject: Subject, schema_id: SchemaId, version: ResolvedVersion, deleted: bool, schema: TypedSchema,
-            references: List[Reference]
+        self,
+        *,
+        subject: Subject,
+        schema_id: SchemaId,
+        version: ResolvedVersion,
+        deleted: bool,
+        schema: TypedSchema,
+        references: List[Reference],
     ) -> None:
         with self.schema_lock_thread:
             self.global_schema_id = max(self.global_schema_id, schema_id)
@@ -133,7 +138,6 @@ class InMemoryDatabase:
                     subject=subject,
                     schema=schema,
                     schema_id=schema_id,
-
                 )
             else:
                 self._delete_from_schema_id_on_subject(
@@ -195,8 +199,7 @@ class InMemoryDatabase:
             return list(self.subjects.keys())
         with self.schema_lock_thread:
             return [
-                subject for subject in self.subjects if
-                self.find_subject_schemas(subject=subject, include_deleted=False)
+                subject for subject in self.subjects if self.find_subject_schemas(subject=subject, include_deleted=False)
             ]
 
     def find_subject_schemas(self, *, subject: Subject, include_deleted: bool) -> Dict[ResolvedVersion, SchemaVersion]:

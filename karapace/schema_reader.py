@@ -6,7 +6,6 @@ See LICENSE for details
 """
 from avro.schema import Schema as AvroSchema
 from contextlib import closing, ExitStack
-
 from jsonschema.validators import Draft7Validator
 from kafka import KafkaConsumer, TopicPartition
 from kafka.admin import KafkaAdminClient, NewTopic
@@ -20,25 +19,22 @@ from kafka.errors import (
 )
 from karapace import constants
 from karapace.config import Config
-
-
+from karapace.dependency import Dependency
 from karapace.errors import InvalidReferences, InvalidSchema
 from karapace.in_memory_database import InMemoryDatabase
 from karapace.key_format import is_key_in_canonical_format, KeyFormatter, KeyMode
 from karapace.master_coordinator import MasterCoordinator
-from karapace.schema_models import parse_protobuf_schema_definition,SchemaType, TypedSchema
+from karapace.protobuf.schema import ProtobufSchema
+from karapace.schema_models import parse_protobuf_schema_definition, SchemaType, TypedSchema
+from karapace.schema_references import Reference
 from karapace.statsd import StatsClient
 from karapace.utils import json_decode, JSONDecodeError, KarapaceKafkaClient
 from threading import Condition, Event, Thread
 from typing import Any, Dict, List, Optional, Union
-from karapace.dependency import Dependency
-from karapace.protobuf.schema import ProtobufSchema
-from karapace.schema_references import Reference
 
-
+import json
 import logging
 import time
-import json
 
 Offset = int
 Subject = str
@@ -530,9 +526,7 @@ class KafkaSchemaReader(Thread):
 
         if resolved_references:
             for ref in resolved_references:
-                self.database.insert_referenced_by(subject=ref.subject,
-                                                   version=ref.version,
-                                                   schema_id=schema_id)
+                self.database.insert_referenced_by(subject=ref.subject, version=ref.version, schema_id=schema_id)
 
     def handle_msg(self, key: dict, value: Optional[dict]) -> None:
         if key["keytype"] == "CONFIG":

@@ -2907,11 +2907,7 @@ async def test_invalid_schema_should_provide_good_error_messages(registry_async_
         f"subjects/{test_subject}/versions",
         json={"schema": schema_str[:-1]},
     )
-<<<<<<< HEAD
-    assert res.json()["message"] == "Expecting ',' delimiter: line 1 column 18 (char 17)"
-=======
     assert res.json()["message"].startswith("Invalid AVRO schema. Error: ")
->>>>>>> master
 
     # Unfortunately the AVRO library doesn't provide a good error message, it just raises an TypeError
     schema_str = json.dumps({"type": "enum", "name": "error"})
@@ -2993,9 +2989,6 @@ async def test_schema_non_compliant_namespace_in_existing(
         f"compatibility/subjects/{subject}/versions/latest",
         json={"schema": json.dumps(evolved_schema)},
     )
-<<<<<<< HEAD
-    assert res.json()["message"] == "error is a reserved type name."
-=======
     assert res.status_code == 200
 
     # Post evolved new schema
@@ -3141,4 +3134,3 @@ async def test_schema_non_compliant_name_in_existing(
     assert "id" in res.json()
     schema_id = res.json()["id"]
     assert schema_id == 2
->>>>>>> master
