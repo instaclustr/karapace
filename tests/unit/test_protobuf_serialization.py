@@ -5,7 +5,7 @@ See LICENSE for details
 from karapace.config import read_config
 from karapace.dependency import Dependency
 from karapace.protobuf.kotlin_wrapper import trim_margin
-from karapace.schema_models import SchemaType, ValidatedTypedSchema
+from karapace.schema_models import SchemaType, ParsedTypedSchema
 from karapace.schema_references import Reference
 from karapace.serialization import (
     InvalidMessageHeader,
@@ -37,10 +37,10 @@ async def make_ser_deser(config_path: str, mock_client) -> SchemaRegistrySeriali
 async def test_happy_flow(default_config_path):
     mock_protobuf_registry_client = Mock()
     schema_for_id_one_future = asyncio.Future()
-    schema_for_id_one_future.set_result(ValidatedTypedSchema.parse(SchemaType.PROTOBUF, trim_margin(schema_protobuf)))
+    schema_for_id_one_future.set_result(ParsedTypedSchema.parse(SchemaType.PROTOBUF, trim_margin(schema_protobuf)))
     mock_protobuf_registry_client.get_schema_for_id.return_value = schema_for_id_one_future
     get_latest_schema_future = asyncio.Future()
-    get_latest_schema_future.set_result((1, ValidatedTypedSchema.parse(SchemaType.PROTOBUF, trim_margin(schema_protobuf))))
+    get_latest_schema_future.set_result((1, ParsedTypedSchema.parse(SchemaType.PROTOBUF, trim_margin(schema_protobuf))))
     mock_protobuf_registry_client.get_latest_schema.return_value = get_latest_schema_future
 
     serializer = await make_ser_deser(default_config_path, mock_protobuf_registry_client)
@@ -59,7 +59,7 @@ async def test_happy_flow(default_config_path):
 async def test_happy_flow_references(default_config_path):
     no_ref_schema_str = """
     |syntax = "proto3";
-    |
+    |package aaa;
     |option java_package = "com.codingharbour.protobuf";
     |option java_outer_classname = "TestEnumOrder";
     |
@@ -77,7 +77,7 @@ async def test_happy_flow_references(default_config_path):
 
     ref_schema_str = """
     |syntax = "proto3";
-    |
+    |package aaa;
     |option java_package = "com.codingharbour.protobuf";
     |option java_outer_classname = "TestEnumOrder";
     |import "Speed.proto";
@@ -99,9 +99,9 @@ async def test_happy_flow_references(default_config_path):
 
     references = [Reference("Speed.proto", "speed", 1)]
 
-    no_ref_schema = ValidatedTypedSchema.parse(SchemaType.PROTOBUF, no_ref_schema_str)
+    no_ref_schema = ParsedTypedSchema.parse(SchemaType.PROTOBUF, no_ref_schema_str)
     dep = Dependency("Speed.proto", "speed", 1, no_ref_schema)
-    ref_schema = ValidatedTypedSchema.parse(SchemaType.PROTOBUF, ref_schema_str, references, {"Speed.proto": dep})
+    ref_schema = ParsedTypedSchema.parse(SchemaType.PROTOBUF, ref_schema_str, references, {"Speed.proto": dep})
 
     mock_protobuf_registry_client = Mock()
     schema_for_id_one_future = asyncio.Future()
@@ -127,7 +127,7 @@ async def test_happy_flow_references(default_config_path):
 async def test_happy_flow_references_two(default_config_path):
     no_ref_schema_str = """
     |syntax = "proto3";
-    |
+    |package bbb;
     |option java_package = "com.serge.protobuf";
     |option java_outer_classname = "TestSpeed";
     |
@@ -145,7 +145,7 @@ async def test_happy_flow_references_two(default_config_path):
 
     ref_schema_str = """
     |syntax = "proto3";
-    |
+    |package bbb;
     |option java_package = "com.serge.protobuf";
     |option java_outer_classname = "TestQuery";
     |import "Speed.proto";
@@ -159,7 +159,7 @@ async def test_happy_flow_references_two(default_config_path):
 
     ref_schema_str_two = """
     |syntax = "proto3";
-    |
+    |package bbb;
     |option java_package = "com.serge.protobuf";
     |option java_outer_classname = "TestMessage";
     |import "Query.proto";
@@ -182,11 +182,11 @@ async def test_happy_flow_references_two(default_config_path):
     references = [Reference("Speed.proto", "speed", 1)]
     references_two = [Reference("Query.proto", "msg", 1)]
 
-    no_ref_schema = ValidatedTypedSchema.parse(SchemaType.PROTOBUF, no_ref_schema_str)
+    no_ref_schema = ParsedTypedSchema.parse(SchemaType.PROTOBUF, no_ref_schema_str)
     dep = Dependency("Speed.proto", "speed", 1, no_ref_schema)
-    ref_schema = ValidatedTypedSchema.parse(SchemaType.PROTOBUF, ref_schema_str, references, {"Speed.proto": dep})
+    ref_schema = ParsedTypedSchema.parse(SchemaType.PROTOBUF, ref_schema_str, references, {"Speed.proto": dep})
     dep_two = Dependency("Query.proto", "qry", 1, ref_schema)
-    ref_schema_two = ValidatedTypedSchema.parse(
+    ref_schema_two = ParsedTypedSchema.parse(
         SchemaType.PROTOBUF, ref_schema_str_two, references_two, {"Query.proto": dep_two}
     )
 
@@ -214,7 +214,7 @@ async def test_happy_flow_references_two(default_config_path):
 async def test_serialization_fails(default_config_path):
     mock_protobuf_registry_client = Mock()
     get_latest_schema_future = asyncio.Future()
-    get_latest_schema_future.set_result((1, ValidatedTypedSchema.parse(SchemaType.PROTOBUF, trim_margin(schema_protobuf))))
+    get_latest_schema_future.set_result((1, ParsedTypedSchema.parse(SchemaType.PROTOBUF, trim_margin(schema_protobuf))))
     mock_protobuf_registry_client.get_latest_schema.return_value = get_latest_schema_future
 
     serializer = await make_ser_deser(default_config_path, mock_protobuf_registry_client)

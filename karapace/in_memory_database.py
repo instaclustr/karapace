@@ -6,8 +6,7 @@ See LICENSE for details
 """
 from dataclasses import dataclass, field
 from karapace.schema_models import SchemaVersion, TypedSchema
-from karapace.schema_reader import Referents
-from karapace.schema_references import Reference
+from karapace.schema_references import Reference, Referents
 from karapace.typing import ResolvedVersion, SchemaId, Subject
 from karapace.utils import reference_key
 from threading import Lock, RLock

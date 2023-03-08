@@ -100,7 +100,7 @@ class TypedSchema:
         self.schema_type = schema_type
         self.references = references
         self.dependencies = dependencies
-        self.schema_str = TypedSchema.normalize_schema_str(schema_str, schema_type)
+        self.schema_str = TypedSchema.normalize_schema_str(schema_str, schema_type, references, dependencies)
         self.max_id: Optional[SchemaId] = None
         self._fingerprint_cached: Optional[str] = None
 
@@ -118,7 +118,11 @@ class TypedSchema:
         return self._fingerprint_cached
 
     @staticmethod
-    def normalize_schema_str(schema_str: str, schema_type: SchemaType) -> str:
+    def normalize_schema_str(schema_str: str,
+                             schema_type: SchemaType,
+                             references: Optional[List[Reference]] = None,
+                             dependencies: Optional[Dict[str, Dependency]] = None,
+                             ) -> str:
         if schema_type is SchemaType.AVRO or schema_type is SchemaType.JSONSCHEMA:
             try:
                 schema_str = json_encode(json_decode(schema_str), compact=True, sort_keys=True)
@@ -127,7 +131,7 @@ class TypedSchema:
                 raise e
         elif schema_type == SchemaType.PROTOBUF:
             try:
-                schema_str = str(parse_protobuf_schema_definition(schema_str))
+                schema_str = str(parse_protobuf_schema_definition(schema_str,references,dependencies,None))
             except InvalidSchema as e:
                 LOG.exception("Schema is not valid ProtoBuf definition")
                 raise e
@@ -236,7 +240,11 @@ def parse(
     else:
         raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
 
-    return ParsedTypedSchema(schema_type=schema_type, schema_str=schema_str, schema=parsed_schema)
+    return ParsedTypedSchema(schema_type=schema_type,
+                             schema_str=schema_str,
+                             schema=parsed_schema,
+                             references=references,
+                             dependencies=dependencies)
 
 
 class ParsedTypedSchema(TypedSchema):

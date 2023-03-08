@@ -4,7 +4,8 @@ See LICENSE for details
 """
 from io import BytesIO
 from karapace.protobuf.encoding_variants import read_indexes, write_indexes
-from karapace.protobuf.exception import IllegalArgumentException, ProtobufSchemaResolutionException, ProtobufTypeException
+from karapace.protobuf.exception import IllegalArgumentException, ProtobufSchemaResolutionException, \
+    ProtobufTypeException
 from karapace.protobuf.message_element import MessageElement
 from karapace.protobuf.protobuf_to_dict import dict_to_protobuf, protobuf_to_dict
 from karapace.protobuf.schema import ProtobufSchema
@@ -17,6 +18,8 @@ import importlib.util
 import os
 import subprocess
 import sys
+
+_module_cache: Dict[str, Any] = dict()
 
 
 def calculate_class_name(name: str) -> str:
@@ -86,9 +89,17 @@ def get_protobuf_class_instance(schema: ProtobufSchema, class_name: str, cfg: Di
 
     proto_path = f"{proto_name}.proto"
     work_dir = f"{directory}/{proto_name}"
+    if not os.path.isdir(directory):
+        try:
+            os.mkdir(directory)
+        except Exception as e:
+            pass
 
     if not os.path.isdir(work_dir):
-        os.mkdir(work_dir)
+        try:
+            os.mkdir(work_dir)
+        except Exception as e:
+            pass
     class_path = f"{directory}/{proto_name}/{proto_name}_pb2.py"
     if not os.path.exists(class_path):
         with open(f"{directory}/{proto_name}/{proto_name}.proto", mode="w", encoding="utf8") as proto_text:
@@ -119,9 +130,18 @@ def get_protobuf_class_instance(schema: ProtobufSchema, class_name: str, cfg: Di
         class_path,
     )
     tmp_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tmp_module)
+    class_to_call = _module_cache.get(tmp_module, None)
+    if class_to_call is not None:
+        sys.path.pop()
+        return class_to_call()
+    try:
+        spec.loader.exec_module(tmp_module)
+    except Exception as e:
+        pass
+
     sys.path.pop()
     class_to_call = getattr(tmp_module, class_name)
+    _module_cache[tmp_module] = class_to_call
     return class_to_call()
 
 
@@ -142,7 +162,8 @@ def read_data(config: dict, writer_schema: ProtobufSchema, reader_schema: Protob
 class ProtobufDatumReader:
     """Deserialize Protobuf-encoded data into a Python data structure."""
 
-    def __init__(self, config: dict, writer_schema: ProtobufSchema = None, reader_schema: ProtobufSchema = None) -> None:
+    def __init__(self, config: dict, writer_schema: ProtobufSchema = None,
+                 reader_schema: ProtobufSchema = None) -> None:
         """As defined in the Protobuf specification, we call the schema encoded
         in the data the "writer's schema", and the schema expected by the
         reader the "reader's schema".

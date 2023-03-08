@@ -26,7 +26,7 @@ from karapace.key_format import is_key_in_canonical_format, KeyFormatter, KeyMod
 from karapace.master_coordinator import MasterCoordinator
 from karapace.protobuf.schema import ProtobufSchema
 from karapace.schema_models import parse_protobuf_schema_definition, SchemaType, TypedSchema
-from karapace.schema_references import Reference
+from karapace.schema_references import Reference, Referents
 from karapace.statsd import StatsClient
 from karapace.typing import ResolvedVersion
 from karapace.utils import json_decode, JSONDecodeError, KarapaceKafkaClient
@@ -42,7 +42,6 @@ Subject = str
 Version = int
 
 Schema = Dict[str, Any]
-Referents = List
 SchemaId = int
 
 # The value `0` is a valid offset and it represents the first message produced

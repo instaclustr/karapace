@@ -1,5 +1,7 @@
 from karapace.typing import JsonData, ResolvedVersion, Subject
-from typing import Any
+from typing import Any, List
+
+Referents = List
 
 
 class Reference:
