@@ -41,6 +41,7 @@ import async_timeout
 
 @unique
 class SchemaErrorCodes(Enum):
+    HTTP_BAD_REQUEST = HTTPStatus.BAD_REQUEST.value
     HTTP_NOT_FOUND = HTTPStatus.NOT_FOUND.value
     HTTP_CONFLICT = HTTPStatus.CONFLICT.value
     HTTP_UNPROCESSABLE_ENTITY = HTTPStatus.UNPROCESSABLE_ENTITY.value
@@ -920,11 +921,11 @@ class KarapaceSchemaRegistryController(KarapaceBase):
         if not isinstance(body, dict):
             self.r(
                 body={
-                    "error_code": SchemaErrorCodes.HTTP_INTERNAL_SERVER_ERROR.value,
-                    "message": "Internal Server Error",
+                    "error_code": SchemaErrorCodes.HTTP_BAD_REQUEST.value,
+                    "message": "Malformed request",
                 },
                 content_type=content_type,
-                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                status=HTTPStatus.BAD_REQUEST,
             )
         for field in body:
             if field not in {"schema", "schemaType", "references"}:
@@ -938,6 +939,15 @@ class KarapaceSchemaRegistryController(KarapaceBase):
                 )
 
     def _validate_schema_type(self, content_type: str, data: JsonData) -> SchemaType:
+        if not isinstance(data, dict):
+            self.r(
+                body={
+                    "error_code": SchemaErrorCodes.HTTP_BAD_REQUEST.value,
+                    "message": "Malformed request",
+                },
+                content_type=content_type,
+                status=HTTPStatus.BAD_REQUEST,
+            )
         schema_type_unparsed = data.get("schemaType", SchemaType.AVRO.value)
         try:
             schema_type = SchemaType(schema_type_unparsed)
