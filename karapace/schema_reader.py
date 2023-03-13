@@ -25,7 +25,7 @@ from karapace.in_memory_database import InMemoryDatabase
 from karapace.key_format import is_key_in_canonical_format, KeyFormatter, KeyMode
 from karapace.master_coordinator import MasterCoordinator
 from karapace.protobuf.schema import ProtobufSchema
-from karapace.schema_models import parse_protobuf_schema_definition, SchemaType, TypedSchema
+from karapace.schema_models import parse_protobuf_schema_definition, SchemaType, SchemaVersion, TypedSchema
 from karapace.schema_references import Reference, Referents
 from karapace.statsd import StatsClient
 from karapace.typing import ResolvedVersion
@@ -549,7 +549,10 @@ class KafkaSchemaReader(Thread):
         subject_data = self.database.find_subject_schemas(subject=reference.subject, include_deleted=False)
         if not subject_data:
             raise InvalidReferences(f"Subject not found {reference.subject}.")
-        schema: TypedSchema = subject_data.get(reference.version, {}).get("schema", None)
+        schema_version: SchemaVersion = subject_data.get(reference.version, {})
+        if schema_version is None:
+            raise InvalidReferences(f"Subject {reference.subject} has no such schema version")
+        schema: TypedSchema = schema_version.schema
         if not schema:
             raise InvalidReferences(f"No schema in {reference.subject} with version {reference.version}.")
         if schema.references:

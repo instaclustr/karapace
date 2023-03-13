@@ -95,7 +95,7 @@ class TypedSchema:
             schema_type (SchemaType): The type of the schema
             schema_str (str): The original schema string
             schema (Optional[Union[Draft7Validator, AvroSchema, ProtobufSchema]]): The parsed and validated schema
-            references (Optional[List[Dependency]]): The references of schema
+             references (Optional[List[Dependency]]): The references of schema
         """
         self.schema_type = schema_type
         self.references = references
@@ -103,7 +103,6 @@ class TypedSchema:
         self.schema_str = TypedSchema.normalize_schema_str(schema_str, schema_type, references, dependencies)
         self.max_id: Optional[SchemaId] = None
         self._fingerprint_cached: Optional[str] = None
-
         self._str_cached: Optional[str] = None
         self._schema_cached: Optional[Union[Draft7Validator, AvroSchema, ProtobufSchema]] = schema
 
@@ -118,11 +117,12 @@ class TypedSchema:
         return self._fingerprint_cached
 
     @staticmethod
-    def normalize_schema_str(schema_str: str,
-                             schema_type: SchemaType,
-                             references: Optional[List[Reference]] = None,
-                             dependencies: Optional[Dict[str, Dependency]] = None,
-                             ) -> str:
+    def normalize_schema_str(
+        schema_str: str,
+        schema_type: SchemaType,
+        references: Optional[List[Reference]] = None,
+        dependencies: Optional[Dict[str, Dependency]] = None,
+    ) -> str:
         if schema_type is SchemaType.AVRO or schema_type is SchemaType.JSONSCHEMA:
             try:
                 schema_str = json_encode(json_decode(schema_str), compact=True, sort_keys=True)
@@ -131,7 +131,7 @@ class TypedSchema:
                 raise e
         elif schema_type == SchemaType.PROTOBUF:
             try:
-                schema_str = str(parse_protobuf_schema_definition(schema_str,references,dependencies,None))
+                schema_str = str(parse_protobuf_schema_definition(schema_str, references, dependencies, False))
             except InvalidSchema as e:
                 LOG.exception("Schema is not valid ProtoBuf definition")
                 raise e
@@ -140,13 +140,18 @@ class TypedSchema:
         return schema_str
 
     def __str__(self) -> str:
-        return self.schema_str
+        if self.schema_type == SchemaType.PROTOBUF:
+            return self.schema_str
+
+        if self._str_cached is None:
+            self._str_cached = json_encode(self.to_dict())
+        return self._str_cached
 
     def __repr__(self) -> str:
         return f"TypedSchema(type={self.schema_type}, schema={str(self)})"
 
     @property
-    def schema_cached(self) -> Union[Draft7Validator, AvroSchema, ProtobufSchema]:
+    def schema(self) -> Union[Draft7Validator, AvroSchema, ProtobufSchema]:
         if self._schema_cached is not None:
             return self._schema_cached
         if self.schema_type is SchemaType.AVRO:
@@ -240,11 +245,13 @@ def parse(
     else:
         raise InvalidSchema(f"Unknown parser {schema_type} for {schema_str}")
 
-    return ParsedTypedSchema(schema_type=schema_type,
-                             schema_str=schema_str,
-                             schema=parsed_schema,
-                             references=references,
-                             dependencies=dependencies)
+    return ParsedTypedSchema(
+        schema_type=schema_type,
+        schema_str=schema_str,
+        schema=parsed_schema,
+        references=references,
+        dependencies=dependencies,
+    )
 
 
 class ParsedTypedSchema(TypedSchema):
@@ -275,7 +282,7 @@ class ParsedTypedSchema(TypedSchema):
         dependencies: Optional[Dict[str, Dependency]] = None,
     ):
         super().__init__(schema_type=schema_type, schema_str=schema_str, references=references, dependencies=dependencies)
-        self.schema = schema
+        self._schema_cached = schema
 
     @staticmethod
     def parse(

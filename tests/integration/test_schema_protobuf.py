@@ -322,7 +322,6 @@ async def test_protobuf_schema_jjaakola_one(registry_async_client: Client) -> No
 
     with_first_ref = trim_margin(with_first_ref)
     references = [{"name": "NoReference.proto", "subject": "sub1", "version": 1}]
-
     res = await registry_async_client.post(
         "subjects/sub2/versions",
         json={"schemaType": "PROTOBUF", "schema": with_first_ref, "references": references},
@@ -640,7 +639,7 @@ message WithReference {
                     references=[{"name": "NoReference.proto", "subject": "wr_not_found", "version": 1}],
                     expected=422,
                     expected_msg=(
-                        f"Invalid schema {SCHEMA_WITH_REF} "
+                        f"Invalid PROTOBUF schema. Error: Invalid schema {SCHEMA_WITH_REF} "
                         "with refs [{name='NoReference.proto', subject='wr_not_found', version=1}] of type PROTOBUF"
                     ),
                     expected_error_code=42201,
@@ -656,7 +655,7 @@ message WithReference {
                     subject="wr_nonexisting_s1_missing_references",
                     references=None,
                     expected=422,
-                    expected_msg=f"Invalid schema {SCHEMA_WITH_REF} with refs None of type PROTOBUF",
+                    expected_msg=f"Invalid PROTOBUF schema. Error: Invalid schema {SCHEMA_WITH_REF} with refs None of type PROTOBUF",
                     expected_error_code=42201,
                 ),
             ],
@@ -796,7 +795,7 @@ message WithReference {
                     ],
                     expected=422,
                     expected_msg=(
-                        f"Invalid schema {SCHEMA_WITH_REF} "
+                        f"Invalid PROTOBUF schema. Error: Invalid schema {SCHEMA_WITH_REF} "
                         "with refs [{name='NoReference.proto', subject='wr_chain_s1', version=1}, "
                         "{name='NotFoundReference.proto', subject='wr_chain_nonexisting', version=1}] "
                         "of type PROTOBUF"
@@ -890,7 +889,7 @@ message WithReference {
                     references=[{"name": "NoReference.proto", "subject": "wr_invalid_reference_ok_schema", "version": 1}],
                     expected=422,
                     expected_msg=(
-                        f"Invalid schema {SCHEMA_INVALID_MISSING_CLOSING_BRACE} "
+                        f"Invalid PROTOBUF schema. Error: Invalid schema {SCHEMA_INVALID_MISSING_CLOSING_BRACE} "
                         "with refs [{name='NoReference.proto', subject='wr_invalid_reference_ok_schema', version=1}] "
                         "of type PROTOBUF"
                     ),

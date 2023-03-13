@@ -5,7 +5,7 @@ See LICENSE for details
 from karapace.config import read_config
 from karapace.dependency import Dependency
 from karapace.protobuf.kotlin_wrapper import trim_margin
-from karapace.schema_models import SchemaType, ParsedTypedSchema
+from karapace.schema_models import ParsedTypedSchema, SchemaType
 from karapace.schema_references import Reference
 from karapace.serialization import (
     InvalidMessageHeader,
@@ -59,7 +59,7 @@ async def test_happy_flow(default_config_path):
 async def test_happy_flow_references(default_config_path):
     no_ref_schema_str = """
     |syntax = "proto3";
-    |package aaa;
+    |
     |option java_package = "com.codingharbour.protobuf";
     |option java_outer_classname = "TestEnumOrder";
     |
@@ -77,7 +77,7 @@ async def test_happy_flow_references(default_config_path):
 
     ref_schema_str = """
     |syntax = "proto3";
-    |package aaa;
+    |
     |option java_package = "com.codingharbour.protobuf";
     |option java_outer_classname = "TestEnumOrder";
     |import "Speed.proto";
@@ -127,7 +127,7 @@ async def test_happy_flow_references(default_config_path):
 async def test_happy_flow_references_two(default_config_path):
     no_ref_schema_str = """
     |syntax = "proto3";
-    |package bbb;
+    |
     |option java_package = "com.serge.protobuf";
     |option java_outer_classname = "TestSpeed";
     |
@@ -145,7 +145,7 @@ async def test_happy_flow_references_two(default_config_path):
 
     ref_schema_str = """
     |syntax = "proto3";
-    |package bbb;
+    |
     |option java_package = "com.serge.protobuf";
     |option java_outer_classname = "TestQuery";
     |import "Speed.proto";
@@ -159,7 +159,7 @@ async def test_happy_flow_references_two(default_config_path):
 
     ref_schema_str_two = """
     |syntax = "proto3";
-    |package bbb;
+    |
     |option java_package = "com.serge.protobuf";
     |option java_outer_classname = "TestMessage";
     |import "Query.proto";

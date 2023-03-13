@@ -375,7 +375,11 @@ class KarapaceSchemaRegistryController(KarapaceBase):
             )
         old_schema_type = self._validate_schema_type(content_type=content_type, data=old)
         try:
-            old_schema = ParsedTypedSchema.parse(old_schema_type, old["schema"])
+            old_references = old.get("references", None)
+            old_dependencies = None
+            if old_references:
+                old_dependencies = self.schema_registry.resolve_references(old_references)
+            old_schema = ParsedTypedSchema.parse(old_schema_type, old["schema"], old_references, old_dependencies)
         except InvalidSchema:
             self.r(
                 body={
@@ -876,6 +880,8 @@ class KarapaceSchemaRegistryController(KarapaceBase):
             )
         except InvalidVersion:
             self._invalid_version(content_type, version)
+        except Exception as a:
+            pass
 
         self.r(referenced_by, content_type, status=HTTPStatus.OK)
 
@@ -1165,6 +1171,8 @@ class KarapaceSchemaRegistryController(KarapaceBase):
                     content_type=content_type,
                     status=HTTPStatus.UNPROCESSABLE_ENTITY,
                 )
+            except Exception as xx:
+                raise xx
 
         elif not master_url:
             self.no_master_error(content_type)

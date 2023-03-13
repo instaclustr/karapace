@@ -4,12 +4,12 @@ See LICENSE for details
 """
 from io import BytesIO
 from karapace.protobuf.encoding_variants import read_indexes, write_indexes
-from karapace.protobuf.exception import IllegalArgumentException, ProtobufSchemaResolutionException, \
-    ProtobufTypeException
+from karapace.protobuf.exception import IllegalArgumentException, ProtobufSchemaResolutionException, ProtobufTypeException
 from karapace.protobuf.message_element import MessageElement
 from karapace.protobuf.protobuf_to_dict import dict_to_protobuf, protobuf_to_dict
 from karapace.protobuf.schema import ProtobufSchema
 from karapace.protobuf.type_element import TypeElement
+from multiprocessing import Process, Queue
 from typing import Any, Dict, List, Optional
 
 import hashlib
@@ -90,16 +90,9 @@ def get_protobuf_class_instance(schema: ProtobufSchema, class_name: str, cfg: Di
     proto_path = f"{proto_name}.proto"
     work_dir = f"{directory}/{proto_name}"
     if not os.path.isdir(directory):
-        try:
-            os.mkdir(directory)
-        except Exception as e:
-            pass
-
+        os.mkdir(directory)
     if not os.path.isdir(work_dir):
-        try:
-            os.mkdir(work_dir)
-        except Exception as e:
-            pass
+        os.mkdir(work_dir)
     class_path = f"{directory}/{proto_name}/{proto_name}_pb2.py"
     if not os.path.exists(class_path):
         with open(f"{directory}/{proto_name}/{proto_name}.proto", mode="w", encoding="utf8") as proto_text:
@@ -130,18 +123,10 @@ def get_protobuf_class_instance(schema: ProtobufSchema, class_name: str, cfg: Di
         class_path,
     )
     tmp_module = importlib.util.module_from_spec(spec)
-    class_to_call = _module_cache.get(tmp_module, None)
-    if class_to_call is not None:
-        sys.path.pop()
-        return class_to_call()
-    try:
-        spec.loader.exec_module(tmp_module)
-    except Exception as e:
-        pass
-
+    spec.loader.exec_module(tmp_module)
     sys.path.pop()
     class_to_call = getattr(tmp_module, class_name)
-    _module_cache[tmp_module] = class_to_call
+
     return class_to_call()
 
 
@@ -159,11 +144,39 @@ def read_data(config: dict, writer_schema: ProtobufSchema, reader_schema: Protob
     return class_instance
 
 
+def reader_process(queue: Queue, config: dict, writer_schema: ProtobufSchema, reader_schema: ProtobufSchema, bio: BytesIO):
+    try:
+        queue.put(protobuf_to_dict(read_data(config, writer_schema, reader_schema, bio), True))
+    except Exception as e:
+        queue.put(e)
+
+
+def reader_mp(config: dict, writer_schema: ProtobufSchema, reader_schema: ProtobufSchema, bio: BytesIO) -> Dict:
+    # Note Protobuf enum values use C++ scoping rules,
+    # meaning that enum values are siblings of their type, not children of it.
+    # Therefore, if we have two proto files with Enums which elements have the same name we will have error.
+    # There we use simple way of Serialization/Deserialization (SerDe) which use python Protobuf library and
+    # protoc compiler.
+    # To avoid problem with enum values for basic SerDe support we
+    # will isolate work with call protobuf libraries in child process.
+    if __name__ == "karapace.protobuf.io":
+        queue = Queue()
+        p = Process(target=reader_process, args=(queue, config, writer_schema, reader_schema, bio))
+        p.start()
+        result = queue.get()
+        p.join()
+        if isinstance(result, Dict):
+            return result
+        if isinstance(result, Exception):
+            raise result
+        raise IllegalArgumentException()
+    return {"Error": "This never must be returned"}
+
+
 class ProtobufDatumReader:
     """Deserialize Protobuf-encoded data into a Python data structure."""
 
-    def __init__(self, config: dict, writer_schema: ProtobufSchema = None,
-                 reader_schema: ProtobufSchema = None) -> None:
+    def __init__(self, config: dict, writer_schema: ProtobufSchema = None, reader_schema: ProtobufSchema = None) -> None:
         """As defined in the Protobuf specification, we call the schema encoded
         in the data the "writer's schema", and the schema expected by the
         reader the "reader's schema".
@@ -172,10 +185,44 @@ class ProtobufDatumReader:
         self._writer_schema = writer_schema
         self._reader_schema = reader_schema
 
-    def read(self, bio: BytesIO) -> None:
+    def read(self, bio: BytesIO) -> Dict:
         if self._reader_schema is None:
             self._reader_schema = self._writer_schema
-        return protobuf_to_dict(read_data(self.config, self._writer_schema, self._reader_schema, bio), True)
+        return reader_mp(self.config, self._writer_schema, self._reader_schema, bio)
+
+
+def writer_process(queue: Queue, config: Dict, writer_schema: ProtobufSchema, message_name: str, datum: dict):
+    class_instance = get_protobuf_class_instance(writer_schema, message_name, config)
+    try:
+        dict_to_protobuf(class_instance, datum)
+    except Exception:
+        # pylint: disable=raise-missing-from
+        e = ProtobufTypeException(writer_schema, datum)
+        queue.put(e)
+        raise e
+    queue.put(class_instance.SerializeToString())
+
+
+def writer_mp(config: Dict, writer_schema: ProtobufSchema, message_name: str, datum: Dict) -> str:
+    # Note Protobuf enum values use C++ scoping rules,
+    # meaning that enum values are siblings of their type, not children of it.
+    # Therefore, if we have two proto files with Enums which elements have the same name we will have error.
+    # There we use simple way of Serialization/Deserialization (SerDe) which use python Protobuf library and
+    # protoc compiler.
+    # To avoid problem with enum values for basic SerDe support we
+    # will isolate work with call protobuf libraries in child process.
+    if __name__ == "karapace.protobuf.io":
+        queue = Queue()
+        p = Process(target=writer_process, args=(queue, config, writer_schema, message_name, datum))
+        p.start()
+        result = queue.get()
+        p.join()
+        if isinstance(result, bytes):
+            return result
+        if isinstance(result, Exception):
+            raise result
+        raise IllegalArgumentException()
+    return "Error :This never must be returned"
 
 
 class ProtobufDatumWriter:
@@ -201,12 +248,4 @@ class ProtobufDatumWriter:
 
     def write(self, datum: dict, writer: BytesIO) -> None:
 
-        class_instance = get_protobuf_class_instance(self._writer_schema, self._message_name, self.config)
-
-        try:
-            dict_to_protobuf(class_instance, datum)
-        except Exception:
-            # pylint: disable=raise-missing-from
-            raise ProtobufTypeException(self._writer_schema, datum)
-
-        writer.write(class_instance.SerializeToString())
+        writer.write(writer_mp(self.config, self._writer_schema, self._message_name, datum))

@@ -313,7 +313,9 @@ class KarapaceSchemaRegistry:
             ret["compatibility"] = compatibility
         return ret
 
-    def subject_version_referencedby_get(self, subject: Subject, version: Version, *, include_deleted: bool = False) -> List:
+    async def subject_version_referencedby_get(
+        self, subject: Subject, version: Version, *, include_deleted: bool = False
+    ) -> List:
         validate_version(version)
         schema_versions = self.subject_get(subject, include_deleted=include_deleted)
         if not schema_versions:
