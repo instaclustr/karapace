@@ -2921,6 +2921,8 @@ async def test_invalid_schema_should_provide_good_error_messages(registry_async_
         f"subjects/{test_subject}/versions",
         json={"schema": schema_str},
     )
+    if res.json()["message"] != "Enum symbols must be a sequence of strings, but it is <class 'NoneType'>":
+        breakpoint()
     assert res.json()["message"] == "Enum symbols must be a sequence of strings, but it is <class 'NoneType'>"
 
     # This is an upstream bug in the python AVRO library, until the bug is fixed we should at least have a nice error message

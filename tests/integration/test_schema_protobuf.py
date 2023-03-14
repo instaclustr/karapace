@@ -655,7 +655,8 @@ message WithReference {
                     subject="wr_nonexisting_s1_missing_references",
                     references=None,
                     expected=422,
-                    expected_msg=f"Invalid PROTOBUF schema. Error: Invalid schema {SCHEMA_WITH_REF} with refs None of type PROTOBUF",
+                    expected_msg=f"Invalid PROTOBUF schema. Error: Invalid schema {SCHEMA_WITH_REF} "
+                    "with refs None of type PROTOBUF",
                     expected_error_code=42201,
                 ),
             ],

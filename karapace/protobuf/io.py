@@ -147,7 +147,7 @@ def read_data(config: dict, writer_schema: ProtobufSchema, reader_schema: Protob
 def reader_process(queue: Queue, config: dict, writer_schema: ProtobufSchema, reader_schema: ProtobufSchema, bio: BytesIO):
     try:
         queue.put(protobuf_to_dict(read_data(config, writer_schema, reader_schema, bio), True))
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         queue.put(e)
 
 

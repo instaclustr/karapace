@@ -881,8 +881,6 @@ class KarapaceSchemaRegistryController(KarapaceBase):
             )
         except InvalidVersion:
             self._invalid_version(content_type, version)
-        except Exception as a:
-            pass
 
         self.r(referenced_by, content_type, status=HTTPStatus.OK)
 
