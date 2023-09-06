@@ -127,6 +127,7 @@ class KafkaSchemaReader(Thread):
         self.topic_replication_factor = self.config["replication_factor"]
         self.consumer: KafkaConsumer | None = None
         self._offset_watcher = offset_watcher
+        Metrics().setup(config=config)
         self.stats = Metrics().stats_client
 
         # Thread synchronization objects

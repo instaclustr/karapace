@@ -48,22 +48,22 @@ class Metrics(metaclass=Singleton):
         self.lock = threading.Lock()
 
     def setup(self, config: Config) -> None:
-        stats_service = config.get("stats_service")
-        if not config.get("metrics_extended"):
-            return
-        if stats_service == "statsd":
-            self.stats_client = StatsdClient(config=config)
-        elif stats_service == "prometheus":
-            self.stats_client = PrometheusClient(config=config)
-        else:
-            raise MetricsException('Config variable "stats_service" is not defined')
         with self.lock:
             if self.is_ready:
                 return
-            self.is_ready = True
 
-        schedule.every(10).seconds.do(self.connections)
-        self.worker_thread.start()
+            stats_service = config.get("stats_service")
+            if not config.get("metrics_extended"):
+                return
+            if stats_service == "statsd":
+                self.stats_client = StatsdClient(config=config)
+            elif stats_service == "prometheus":
+                self.stats_client = PrometheusClient(config=config)
+            else:
+                raise MetricsException('Config variable "stats_service" is not defined')
+            self.is_ready = True
+            schedule.every(10).seconds.do(self.connections)
+            self.worker_thread.start()
 
     def request(self, size: int) -> None:
         if not self.is_ready or self.stats_client is None:
