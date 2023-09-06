@@ -38,8 +38,10 @@ class Singleton(type):
 
 class Metrics(metaclass=Singleton):
     stats_client: StatsClient
-    
-    def __init__(self) -> None:
+
+    def __init__(
+        self,
+    ) -> None:
         self.is_ready = False
         self.stop_event = threading.Event()
         self.worker_thread = threading.Thread(target=self.worker)
