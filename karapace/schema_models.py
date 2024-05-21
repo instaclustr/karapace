@@ -181,15 +181,20 @@ class TypedSchema:
         return parsed_typed_schema.schema
 
 
-def avro_schema_merge(schema_str: str, dependencies: Mapping[str, Dependency]) -> str:
+def avro_schema_merge_builder(schema_str: str, dependencies: Mapping[str, Dependency]) -> str:
     """To support references in AVRO we recursively merge all referenced schemas with current schema"""
     if dependencies:
         merged_schema = ""
         for dependency in dependencies.values():
-            merged_schema += avro_schema_merge(dependency.schema.schema_str, dependency.schema.dependencies) + ",\n"
+            merged_schema += avro_schema_merge_builder(dependency.schema.schema_str,
+                                                       dependency.schema.dependencies) + ",\n"
         merged_schema += schema_str
-        return "[\n" + merged_schema + "\n]"
+        return merged_schema
     return schema_str
+
+
+def avro_schema_merge(schema_str: str, dependencies: Mapping[str, Dependency]) -> str:
+    return "[\n" + avro_schema_merge_builder(schema_str, dependencies) + "\n]"
 
 
 def parse(
