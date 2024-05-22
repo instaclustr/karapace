@@ -186,8 +186,7 @@ def avro_schema_merge_builder(schema_str: str, dependencies: Mapping[str, Depend
     if dependencies:
         merged_schema = ""
         for dependency in dependencies.values():
-            merged_schema += avro_schema_merge_builder(dependency.schema.schema_str,
-                                                       dependency.schema.dependencies) + ",\n"
+            merged_schema += avro_schema_merge_builder(dependency.schema.schema_str, dependency.schema.dependencies) + ",\n"
         merged_schema += schema_str
         return merged_schema
     return schema_str
