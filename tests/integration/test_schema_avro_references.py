@@ -11,7 +11,7 @@ import json
 baseurl = "http://localhost:8081"
 
 
-async def test_avro_references(registry_async_client: Client) -> None:
+async def test_simple_references(registry_async_client: Client) -> None:
     schema_country = {
         "type": "record",
         "name": "Country",
@@ -174,6 +174,37 @@ async def test_avro_references(registry_async_client: Client) -> None:
     res = await registry_async_client.post(
         "subjects/person2/versions",
         json={"schemaType": "AVRO", "schema": json.dumps(schema_union), "references": two_references},
+    )
+    assert res.status_code == 200
+    assert "id" in res.json()
+
+    schema_union2 = [
+        {
+            "type": "record",
+            "name": "Person",
+            "namespace": "com.netapp",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "age", "type": "int"},
+                {"name": "address", "type": "Address"},
+                {"name": "job", "type": "Job"},
+            ],
+        },
+        {
+            "type": "record",
+            "name": "UnemployedPerson",
+            "namespace": "com.netapp",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "age", "type": "int"},
+                {"name": "address", "type": "Address"},
+            ],
+        },
+    ]
+
+    res = await registry_async_client.post(
+        "subjects/person3/versions",
+        json={"schemaType": "AVRO", "schema": json.dumps(schema_union2), "references": two_references},
     )
     assert res.status_code == 200
     assert "id" in res.json()
