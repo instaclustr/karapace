@@ -252,18 +252,16 @@ def parse(
                 parsed_schema = parsed_schema_imaginary.schemas[0].fields[0].type.schemas[-1]
             else:
                 raise InvalidSchema
+            return ParsedTypedSchema(
+                schema_type=schema_type,
+                schema_str=schema_str,
+                schema=parsed_schema,
+                references=references,
+                dependencies=dependencies,
+                schema_imaginary=parsed_schema_imaginary,
+            )
         except (SchemaParseException, JSONDecodeError, TypeError) as e:
             raise InvalidSchema from e
-
-        return ParsedTypedSchema(
-            schema_type=schema_type,
-            schema_str=schema_str,
-            schema=parsed_schema,
-            references=references,
-            dependencies=dependencies,
-            schema_imaginary=parsed_schema_imaginary,
-        )
-
     elif schema_type is SchemaType.JSONSCHEMA:
         try:
             parsed_schema = parse_jsonschema_definition(schema_str)
