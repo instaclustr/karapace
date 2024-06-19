@@ -146,7 +146,8 @@ async def test_simple_references(registry_async_client: Client) -> None:
     )
 
     assert res.status_code == 200
-    assert res.json() == {"is_compatible": False}
+    q = res.json()
+    assert q == {"is_compatible": False}
 
     schema_union = {
         "type": "record",

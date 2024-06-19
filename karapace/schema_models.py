@@ -27,6 +27,7 @@ from karapace.typing import JsonObject, ResolvedVersion, SchemaId, Subject
 from karapace.utils import assert_never, json_decode, json_encode, JSONDecodeError
 from typing import Any, cast, Dict, Final, final, Mapping, Sequence
 
+import avro.schema
 import hashlib
 import logging
 import re
@@ -183,7 +184,7 @@ class TypedSchema:
 
 
 class AvroMerge:
-    def __init__(self, schema_str: str, dependencies: Mapping[str, Dependency]):
+    def __init__(self, schema_str: str, dependencies: Mapping[str, Dependency] | None = None):
         self.schema_str = schema_str
         self.dependencies = dependencies
         self.unique_id = 0
@@ -209,7 +210,7 @@ class AvroMerge:
             + "]}]}"
         )
 
-    def builder(self, schema_str: str, dependencies: Mapping[str, Dependency]) -> str:
+    def builder(self, schema_str: str, dependencies: Mapping[str, Dependency] | None = None) -> str:
         """To support references in AVRO we recursively merge all referenced schemas with current schema"""
         if dependencies:
             merged_schema = ""
@@ -219,8 +220,6 @@ class AvroMerge:
             merged_schema += self.union_safe_schema_str(schema_str)
             return merged_schema
 
-        if self.unique_id == 0:
-            return schema_str
         self.unique_id += 1
         return self.union_safe_schema_str(schema_str)
 
@@ -244,13 +243,26 @@ def parse(
     parsed_schema: Draft7Validator | AvroSchema | ProtobufSchema
     if schema_type is SchemaType.AVRO:
         try:
-            parsed_schema = parse_avro_schema_definition(
+            parsed_schema_imaginary = parse_avro_schema_definition(
                 AvroMerge(schema_str, dependencies).merge(),
                 validate_enum_symbols=validate_avro_enum_symbols,
                 validate_names=validate_avro_names,
             )
+            if isinstance(parsed_schema_imaginary, avro.schema.UnionSchema):
+                parsed_schema = parsed_schema_imaginary.schemas[0].fields[0].type.schemas[-1]
+            else:
+                raise InvalidSchema
         except (SchemaParseException, JSONDecodeError, TypeError) as e:
             raise InvalidSchema from e
+
+        return ParsedTypedSchema(
+            schema_type=schema_type,
+            schema_str=schema_str,
+            schema=parsed_schema,
+            references=references,
+            dependencies=dependencies,
+            schema_imaginary=parsed_schema_imaginary
+        )
 
     elif schema_type is SchemaType.JSONSCHEMA:
         try:
@@ -284,6 +296,7 @@ def parse(
         schema=parsed_schema,
         references=references,
         dependencies=dependencies,
+
     )
 
 
@@ -313,9 +326,10 @@ class ParsedTypedSchema(TypedSchema):
         schema: Draft7Validator | AvroSchema | ProtobufSchema,
         references: Sequence[Reference] | None = None,
         dependencies: Mapping[str, Dependency] | None = None,
+        schema_imaginary: Draft7Validator | AvroSchema | ProtobufSchema | None = None,
     ) -> None:
         self._schema_cached: Draft7Validator | AvroSchema | ProtobufSchema | None = schema
-
+        self.schema_imaginary = schema_imaginary
         super().__init__(
             schema_type=schema_type,
             schema_str=schema_str,
