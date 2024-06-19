@@ -261,7 +261,7 @@ def parse(
             schema=parsed_schema,
             references=references,
             dependencies=dependencies,
-            schema_imaginary=parsed_schema_imaginary
+            schema_imaginary=parsed_schema_imaginary,
         )
 
     elif schema_type is SchemaType.JSONSCHEMA:
@@ -296,7 +296,6 @@ def parse(
         schema=parsed_schema,
         references=references,
         dependencies=dependencies,
-
     )
 
 

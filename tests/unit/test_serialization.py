@@ -445,4 +445,3 @@ def test_name_strategy_for_protobuf(expected_subject: Subject, strategy: NameStr
         get_subject_name(topic_name="foo", schema=TYPED_PROTOBUF_SCHEMA, subject_type=subject_type, naming_strategy=strategy)
         == expected_subject
     )
-
