@@ -27,8 +27,10 @@ from karapace.typing import JsonObject, SchemaId, Subject, Version, VersionTag
 from karapace.utils import assert_never, json_decode, json_encode, JSONDecodeError
 from typing import Any, cast, Dict, Final, final, Mapping, Sequence
 
+import avro.schema
 import hashlib
 import logging
+import re
 
 LOG = logging.getLogger(__name__)
 
@@ -138,6 +140,7 @@ class TypedSchema:
             except JSONDecodeError as e:
                 LOG.info("Schema is not valid JSON")
                 raise e
+
         elif schema_type == SchemaType.PROTOBUF:
             if schema:
                 schema_str = str(schema)
@@ -180,6 +183,51 @@ class TypedSchema:
         return parsed_typed_schema.schema
 
 
+class AvroMerge:
+    def __init__(self, schema_str: str, dependencies: Mapping[str, Dependency] | None = None):
+        self.schema_str = schema_str
+        self.dependencies = dependencies
+        self.unique_id = 0
+
+    def union_safe_schema_str(self, schema_str: str) -> str:
+        # in case we meet union - we use it as is
+        regex = re.compile(r"^\s*\[")
+        if regex.match(schema_str):
+            return (
+                "{"
+                + f' "name": "___un__ique_x_n_q_karapace____{self.unique_id}",'
+                + '"type":"record","fields":[{"name":"name", "type":'
+                + schema_str
+                + "}]}"
+            )
+
+        return (
+            "{"
+            + f' "name": "___un__ique_x_n_q_karapace____{self.unique_id}",'
+            + '"type":"record","fields":[{"name":"name", "type": '
+            + '["string",'
+            + schema_str
+            + "]}]}"
+        )
+
+    def builder(self, schema_str: str, dependencies: Mapping[str, Dependency] | None = None) -> str:
+        """To support references in AVRO we recursively merge all referenced schemas with current schema"""
+        if dependencies:
+            merged_schema = ""
+            for dependency in dependencies.values():
+                merged_schema += self.builder(dependency.schema.schema_str, dependency.schema.dependencies) + ",\n"
+            self.unique_id += 1
+            merged_schema += self.union_safe_schema_str(schema_str)
+            return merged_schema
+
+        self.unique_id += 1
+        return self.union_safe_schema_str(schema_str)
+
+    def merge(self) -> str:
+        result = "[\n" + self.builder(self.schema_str, self.dependencies) + "\n]"
+        return result
+
+
 def parse(
     schema_type: SchemaType,
     schema_str: str,
@@ -195,14 +243,25 @@ def parse(
     parsed_schema: Draft7Validator | AvroSchema | ProtobufSchema
     if schema_type is SchemaType.AVRO:
         try:
-            parsed_schema = parse_avro_schema_definition(
-                schema_str,
+            parsed_schema_imaginary = parse_avro_schema_definition(
+                AvroMerge(schema_str, dependencies).merge(),
                 validate_enum_symbols=validate_avro_enum_symbols,
                 validate_names=validate_avro_names,
             )
+            if isinstance(parsed_schema_imaginary, avro.schema.UnionSchema):
+                parsed_schema = parsed_schema_imaginary.schemas[0].fields[0].type.schemas[-1]
+            else:
+                raise InvalidSchema
+            return ParsedTypedSchema(
+                schema_type=schema_type,
+                schema_str=schema_str,
+                schema=parsed_schema,
+                references=references,
+                dependencies=dependencies,
+                schema_imaginary=parsed_schema_imaginary,
+            )
         except (SchemaParseException, JSONDecodeError, TypeError) as e:
             raise InvalidSchema from e
-
     elif schema_type is SchemaType.JSONSCHEMA:
         try:
             parsed_schema = parse_jsonschema_definition(schema_str)
@@ -264,9 +323,10 @@ class ParsedTypedSchema(TypedSchema):
         schema: Draft7Validator | AvroSchema | ProtobufSchema,
         references: Sequence[Reference] | None = None,
         dependencies: Mapping[str, Dependency] | None = None,
+        schema_imaginary: Draft7Validator | AvroSchema | ProtobufSchema | None = None,
     ) -> None:
         self._schema_cached: Draft7Validator | AvroSchema | ProtobufSchema | None = schema
-
+        self.schema_imaginary = schema_imaginary
         super().__init__(
             schema_type=schema_type,
             schema_str=schema_str,

@@ -88,28 +88,37 @@ def check_compatibility(
     if old_schema.schema_type is SchemaType.AVRO:
         assert isinstance(old_schema.schema, AvroSchema)
         assert isinstance(new_schema.schema, AvroSchema)
+        if isinstance(new_schema.schema_imaginary, AvroSchema):
+            new_schema_imaginary = new_schema.schema_imaginary
+        else:
+            new_schema_imaginary = new_schema.schema
+
+        if isinstance(old_schema.schema_imaginary, AvroSchema):
+            old_schema_imaginary = old_schema.schema_imaginary
+        else:
+            old_schema_imaginary = old_schema.schema
         if compatibility_mode in {CompatibilityModes.BACKWARD, CompatibilityModes.BACKWARD_TRANSITIVE}:
             result = check_avro_compatibility(
-                reader_schema=new_schema.schema,
-                writer_schema=old_schema.schema,
+                reader_schema=new_schema_imaginary,
+                writer_schema=old_schema_imaginary,
             )
 
         elif compatibility_mode in {CompatibilityModes.FORWARD, CompatibilityModes.FORWARD_TRANSITIVE}:
             result = check_avro_compatibility(
-                reader_schema=old_schema.schema,
-                writer_schema=new_schema.schema,
+                reader_schema=old_schema_imaginary,
+                writer_schema=new_schema_imaginary,
             )
 
         elif compatibility_mode in {CompatibilityModes.FULL, CompatibilityModes.FULL_TRANSITIVE}:
             result = check_avro_compatibility(
-                reader_schema=new_schema.schema,
-                writer_schema=old_schema.schema,
+                reader_schema=new_schema_imaginary,
+                writer_schema=old_schema_imaginary,
             )
             result = merge(
                 result,
                 check_avro_compatibility(
-                    reader_schema=old_schema.schema,
-                    writer_schema=new_schema.schema,
+                    reader_schema=old_schema_imaginary,
+                    writer_schema=new_schema_imaginary,
                 ),
             )
 

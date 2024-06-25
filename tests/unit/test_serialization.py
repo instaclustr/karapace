@@ -202,7 +202,8 @@ def test_flatten_unions_map() -> None:
     )
     record = {"foo": {"attr1": {"string": "sample data"}}}
     flatten_record = {"foo": {"attr1": "sample data"}}
-    assert flatten_unions(typed_schema.schema, record) == flatten_record
+    a = flatten_unions(typed_schema.schema, record)
+    assert a == flatten_record
 
     typed_schema = ValidatedTypedSchema.parse(
         SchemaType.AVRO,
