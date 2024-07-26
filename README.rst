@@ -90,7 +90,7 @@ Alternatively you can do a source install using::
 
   python setup.py install
 
-Quickstart
+Quickstart!
 ==========
 
 To register the first version of a schema under the subject "test" using Avro schema::
