@@ -26,6 +26,9 @@ from karapace.schema_references import Reference
 from karapace.schema_type import SchemaType
 from karapace.typing import JsonObject, SchemaId, Subject, Version, VersionTag
 from karapace.utils import assert_never, json_decode, json_encode, JSONDecodeError
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT7, SchemaRegistry
+from referencing.typing import D
 from typing import Any, cast, Collection, Dict, Final, final, Mapping, Sequence
 
 import hashlib
@@ -46,8 +49,8 @@ def parse_avro_schema_definition(s: str, validate_enum_symbols: bool = True, val
     return avro_parse(json_encode(json_data), validate_enum_symbols=validate_enum_symbols, validate_names=validate_names)
 
 
-def parse_jsonschema_definition(schema_definition: str) -> Draft7Validator:
-    """Parses and validates `schema_definition`.
+def parse_jsonschema_definition(schema_definition: str, registry: SchemaRegistry | None = None) -> Draft7Validator:
+    """Parses and validates `schema_definition` with its `dependencies`.
 
     Raises:
         SchemaError: If `schema_definition` is not a valid Draft7 schema.
@@ -56,6 +59,8 @@ def parse_jsonschema_definition(schema_definition: str) -> Draft7Validator:
     # TODO: Annotations dictate Mapping[str, Any] here, but we have unit tests that
     #  use bool values and fail if we assert isinstance(_, dict).
     Draft7Validator.check_schema(schema)  # type: ignore[arg-type]
+    if registry:
+        return Draft7Validator(schema, registry=registry)  # type: ignore[arg-type]
     return Draft7Validator(schema)  # type: ignore[arg-type]
 
 
@@ -194,6 +199,33 @@ class TypedSchema:
         return parsed_typed_schema.schema
 
 
+def json_registry(schema_str: str, dependencies: Mapping[str, Dependency] | None = None) -> Registry | None:
+    """To support references in JSON, we create a Registry object using a list of all dependencies,
+    which are extracted recursively.
+    We do not check for cyclic dependencies, as these should be verified at a higher level during
+    Karapace schema storage
+    """
+    stack: list[tuple[str, Mapping[str, Dependency] | None]] = [(schema_str, dependencies)]
+    resources: list[tuple[str, Resource[D]]] | None = None
+    if dependencies is None:
+        return None
+    while stack:
+        current_schema_str, current_dependencies = stack.pop()
+        if current_dependencies:
+            stack.append((current_schema_str, None))
+            for dependency in current_dependencies.values():
+                stack.append((dependency.schema.schema_str, dependency.schema.dependencies))
+        else:
+            schema_json = json_decode(current_schema_str)
+            if resources is None:
+                resources = [(schema_json["$id"], DRAFT7.create_resource(current_schema_str))]
+                continue
+            resources.append((schema_json["$id"], DRAFT7.create_resource(current_schema_str)))
+    if resources:
+        return Registry().with_resources(resources)
+    return None
+
+
 def parse(
     schema_type: SchemaType,
     schema_str: str,
@@ -220,7 +252,7 @@ def parse(
 
     elif schema_type is SchemaType.JSONSCHEMA:
         try:
-            parsed_schema = parse_jsonschema_definition(schema_str)
+            parsed_schema = parse_jsonschema_definition(schema_str, registry=json_registry(schema_str, dependencies))
             # TypeError - Raised when the user forgets to encode the schema as a string.
         except (TypeError, JSONDecodeError, SchemaError, AssertionError) as e:
             raise InvalidSchema from e
