@@ -4,11 +4,19 @@ See LICENSE for details
 """
 from __future__ import annotations
 
+import hashlib
+import logging
+from dataclasses import dataclass
+from typing import Any, cast, Collection, Dict, Final, final, Mapping, Sequence
+
 from avro.errors import SchemaParseException
 from avro.schema import parse as avro_parse, Schema as AvroSchema
-from dataclasses import dataclass
-from jsonschema import Draft7Validator
+from jsonschema import Draft7Validator, RefResolver
 from jsonschema.exceptions import SchemaError
+from referencing import Resource
+from referencing.jsonschema import DRAFT7, SchemaRegistry as Registry
+from referencing.typing import D
+
 from karapace.dependency import Dependency
 from karapace.errors import InvalidSchema, InvalidVersion, VersionNotFoundException
 from karapace.protobuf import protopace
@@ -18,21 +26,13 @@ from karapace.protobuf.exception import (
     IllegalStateException,
     ProtobufException,
     ProtobufUnresolvedDependencyException,
-    SchemaParseException as ProtobufSchemaParseException,
-)
+    SchemaParseException as ProtobufSchemaParseException, )
 from karapace.protobuf.proto_normalizations import NormalizedProtobufSchema
 from karapace.protobuf.schema import ProtobufSchema
 from karapace.schema_references import Reference
 from karapace.schema_type import SchemaType
 from karapace.typing import JsonObject, SchemaId, Subject, Version, VersionTag
 from karapace.utils import assert_never, json_decode, json_encode, JSONDecodeError
-from referencing import Registry, Resource
-from referencing.jsonschema import DRAFT7, SchemaRegistry
-from referencing.typing import D
-from typing import Any, cast, Collection, Dict, Final, final, Mapping, Sequence
-
-import hashlib
-import logging
 
 LOG = logging.getLogger(__name__)
 
@@ -48,8 +48,10 @@ def parse_avro_schema_definition(s: str, validate_enum_symbols: bool = True, val
     json_data = json_decode(s)
     return avro_parse(json_encode(json_data), validate_enum_symbols=validate_enum_symbols, validate_names=validate_names)
 
+class InvalidValidatorRegistry(Exception):
+    pass
 
-def parse_jsonschema_definition(schema_definition: str, registry: SchemaRegistry | None = None) -> Draft7Validator:
+def parse_jsonschema_definition(schema_definition: str,  resolver: RefResolver| None = None) -> Draft7Validator:
     """Parses and validates `schema_definition` with its `dependencies`.
 
     Raises:
@@ -59,10 +61,9 @@ def parse_jsonschema_definition(schema_definition: str, registry: SchemaRegistry
     # TODO: Annotations dictate Mapping[str, Any] here, but we have unit tests that
     #  use bool values and fail if we assert isinstance(_, dict).
     Draft7Validator.check_schema(schema)  # type: ignore[arg-type]
-    if registry:
-        return Draft7Validator(schema, registry=registry)  # type: ignore[arg-type]
+    if resolver:
+        return Draft7Validator(schema, resolver=resolver)  # type: ignore[arg-type]
     return Draft7Validator(schema)  # type: ignore[arg-type]
-
 
 def _format_protobuf(schema: str, dependencies: Collection[Dependency], name: str = "schema.proto") -> str:
     deps = [dep.to_proto() for dep in dependencies]
@@ -199,12 +200,12 @@ class TypedSchema:
         return parsed_typed_schema.schema
 
 
-def json_registry(schema_str: str, dependencies: Mapping[str, Dependency] | None = None) -> Registry | None:
-    """To support references in JSON, we create a Registry object using a list of all dependencies,
-    which are extracted recursively.
-    We do not check for cyclic dependencies, as these should be verified at a higher level during
-    Karapace schema storage
-    """
+def json_resolver(schema_str: str, dependencies: Mapping[str, Dependency] | None = None) -> RefResolver | None:
+    # RefResolver is deprecated but it still used in karapace code
+    # see normalize_schema_rec() function in src/karapace/compatibility/jsonschema/utils.py
+    # In case when karapace JSON support will be updated we must rewrite this code to use
+    # referencing.Registry instead of RefResolver
+    schema_store:dict = {}
     stack: list[tuple[str, Mapping[str, Dependency] | None]] = [(schema_str, dependencies)]
     resources: list[tuple[str, Resource[D]]] | None = None
     if dependencies is None:
@@ -217,13 +218,10 @@ def json_registry(schema_str: str, dependencies: Mapping[str, Dependency] | None
                 stack.append((dependency.schema.schema_str, dependency.schema.dependencies))
         else:
             schema_json = json_decode(current_schema_str)
-            if resources is None:
-                resources = [(schema_json["$id"], DRAFT7.create_resource(current_schema_str))]
-                continue
-            resources.append((schema_json["$id"], DRAFT7.create_resource(current_schema_str)))
-    if resources:
-        return Registry().with_resources(resources)
-    return None
+            schema_store[schema_json["$id"]] = schema_json
+
+    resolver = RefResolver.from_schema(json_decode(schema_str), store=schema_store)
+    return resolver
 
 
 def parse(
@@ -252,7 +250,7 @@ def parse(
 
     elif schema_type is SchemaType.JSONSCHEMA:
         try:
-            parsed_schema = parse_jsonschema_definition(schema_str, registry=json_registry(schema_str, dependencies))
+            parsed_schema = parse_jsonschema_definition(schema_str, resolver=json_resolver(schema_str, dependencies))
             # TypeError - Raised when the user forgets to encode the schema as a string.
         except (TypeError, JSONDecodeError, SchemaError, AssertionError) as e:
             raise InvalidSchema from e
