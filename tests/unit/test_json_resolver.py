@@ -4,7 +4,6 @@ See LICENSE for details
 """
 
 from jsonschema import RefResolver
-
 from karapace.dependency import Dependency
 from karapace.schema_models import json_resolver, parse_jsonschema_definition, ValidatedTypedSchema
 from karapace.schema_type import SchemaType
@@ -29,9 +28,11 @@ def test_json_registry_with_single_dependency():
             name="dep1",
             subject=Subject("subj"),
             version=Version(1),
-            target_schema=ValidatedTypedSchema(schema_type=SchemaType.JSONSCHEMA,
-                                               schema_str=dependency_schema,
-                                               schema=parse_jsonschema_definition(dependency_schema))
+            target_schema=ValidatedTypedSchema(
+                schema_type=SchemaType.JSONSCHEMA,
+                schema_str=dependency_schema,
+                schema=parse_jsonschema_definition(dependency_schema),
+            ),
         )
     }
 
